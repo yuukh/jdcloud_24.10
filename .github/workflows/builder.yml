@@ -169,7 +169,7 @@ jobs:
                 echo "BUILD_DOCKERMAN=" >> $GITHUB_ENV
         fi
         echo "FILE_DATE=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo "::set-output name=status::success"
 
     - name: 单独编译 wrtbwmon 包 (.ipk)
       id: wrtbwmon
@@ -179,12 +179,8 @@ jobs:
         make package/luci-app-wrtbwmon/compile -j$(nproc) V=s || make package/luci-app-wrtbwmon/compile V=s
         rm -rf wrtbwmon-ipk && mkdir -p wrtbwmon-ipk
         find bin/packages -name '*wrtbwmon*.ipk' -exec cp -f {} wrtbwmon-ipk/ \; 2>/dev/null || true
+        echo "生成的 wrtbwmon 包："
         find wrtbwmon-ipk -name '*.ipk' | sort
-        if [ -n "$(ls -A wrtbwmon-ipk 2>/dev/null)" ]; then
-          echo "status=success" >> $GITHUB_OUTPUT
-        else
-          echo "status=failed" >> $GITHUB_OUTPUT
-        fi
 
     - name: 查看磁盘使用情况
       if: (!cancelled())
@@ -200,14 +196,15 @@ jobs:
         sudo -E apt-get -qq install rename
         rename 's/.*${{ env.DEVICE_NAME }}/${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}/' *
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo "::set-output name=status::success"
 
     - name: 上传 wrtbwmon 独立包 (.ipk)
       uses: actions/upload-artifact@v4
-      if: steps.wrtbwmon.outputs.status == 'success'
+      if: ${{ github.event.inputs.BUILD_WRTBWMON == 'true' }}
       with:
         name: wrtbwmon-ipk-${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
         path: openwrt/wrtbwmon-ipk/*.ipk
+        if-no-files-found: warn
 
     - name: 打包上传固件到Actions Artifacts
       uses: actions/upload-artifact@main
@@ -229,15 +226,15 @@ jobs:
         else
                 echo "- 未编译luci-app-dockerman" >> release.txt
         fi
-        if [ "${{ steps.wrtbwmon.outputs.status }}" = 'success' ]; then
+        if [ -n "$(ls openwrt/wrtbwmon-ipk/*.ipk 2>/dev/null)" ]; then
                 echo "- 已单独编译 luci-app-wrtbwmon (.ipk 随发布提供，未内置入固件)" >> release.txt
         fi
-        echo "release_tag=${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}" >> $GITHUB_OUTPUT
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo "::set-output name=release_tag::${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}"
+        echo "::set-output name=status::success"
 
     - name: 发布固件至Release
       uses: softprops/action-gh-release@v2.1.0
-      if: steps.tag.outputs.status == 'success' && !cancelled()
+      if: ${{ !cancelled() }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
