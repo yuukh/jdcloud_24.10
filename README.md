@@ -19,36 +19,31 @@
 - **源码仓库**: [padavanonly/immortalwrt-mt798x-6.6](https://github.com/padavanonly/immortalwrt-mt798x-6.6)
 - **根文件系统**: 2048MB 分区大小
 - **支持**: WiFi 6 (802.11ax)、双频并发、硬件加速
+- **WiFi 驱动**: MediaTek 私有 `mt_wifi` 驱动 (MT7986 + MT7976)，固件编译于 2023-08-14
+- **交换机模型**: DSA (`lan1`~`lan4` + `eth1` WAN)
 
 ### 📦 预装软件包
 
+> 已移除 Passwall、Docker / Podman 容器全家桶、AdGuard Home、Netdata、ZeroTier。
+
 #### 🌐 网络工具
 
-- **科学上网**: Passwall
-- **VPN服务**: WireGuard, OpenVPN Server, IPSec VPN, ZeroTier
+- **VPN 服务**: WireGuard, OpenVPN Server, IPSec VPN (多用户)
 - **网络管理**:
-  - DDNS (支持阿里云、Cloudflare、DNSPOD等多家服务商)
-  - UPnP, Wake on LAN (含增强版)
+  - DDNS (支持阿里云、Cloudflare、DNSPOD、GoDaddy、NoIP、Route53 等多家服务商)
+  - UPnP, Wake on LAN (含增强版 `wolplus`)
   - SQM QoS 流量控制
   - 带宽限速 (eqos-mtk)
   - 网络加速 (TurboACC-MTK)
-  - ARP绑定
+  - ARP 绑定
 - **网络监控**:
-  - Netdata 实时监控
-  - 流量统计 (nlbwmon)
-  - 系统统计 (statistics)
+  - 流量统计 (nlbwmon / wrtbwmon)
+  - 系统统计 (statistics / collectd：CPU、内存、网卡)
 - **网络测试**: iperf3, tcping, tcpdump, mtr
-- **安全工具**:
-  - AdGuard Home 广告拦截
-  - BanIP 封禁工具
-  - VLMCSD KMS服务器
-
-#### 🐳 容器化支持
-
-- **Docker**: 完整的 Docker 环境
-- **容器管理**: Dockerman Web界面
-- **容器运行时**: containerd, runc, podman
-- **容器编排**: docker-compose
+- **安全 / 其他**:
+  - VLMCSD KMS 服务器
+  - Lucky 网络工具箱
+  - MSB Lite (组播转单播)
 
 #### 💾 存储与文件系统
 
@@ -56,37 +51,30 @@
 - **存储工具**:
   - 自动挂载
   - 分区管理 (diskman)
-  - USB存储支持
-  - 多种分区工具 (fdisk, cfdisk, parted, gdisk)
+  - USB 存储支持
+  - 多种分区工具 (cfdisk, parted, gdisk / sgdisk)
 - **文件系统工具**:
-  - e2fsprogs (ext4工具)
-  - f2fs-tools (F2FS工具)
-  - btrfs-progs (BTRFS工具)
+  - e2fsprogs (ext4 工具)
+  - f2fs-tools (F2FS 工具)
+  - btrfs-progs (BTRFS 工具)
 
-#### 🎨 Web界面主题
+#### 🎨 Web 界面主题
 
-- Argon 主题
+- Argon 主题 (+ argon-config)
 - Bootstrap Mod 主题
 - Design 主题
 
 #### 🛠️ 系统工具
 
-- **终端**: ttyd Web终端, zsh shell
+- **终端**: ttyd Web 终端, zsh shell
 - **编辑器**: vim-fuller, nano
-- **监控**:
-  - htop 进程监控
-  - 系统性能监控
-  - 日志查看器
+- **监控**: htop 进程监控、日志查看器
 - **管理工具**:
-  - 命令执行工具
-  - 定时任务管理
-  - 高级重启管理
-- **网络**:
-  - 以太网唤醒
+  - 命令执行 (commands)
+  - 定时任务管理 (crontab)
   - 网络时间同步 (NTP)
-- **其他**:
-  - Lucky 网络工具箱
-  - MT WiFi配置工具
+  - 以太网唤醒
+- **其他**: MT WiFi 配置工具 (mtwifi-cfg)
 
 ## 🚀 使用方法
 
@@ -190,6 +178,10 @@ echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >>feeds.co
 - **默认登录地址**: http://192.168.1.1 (可在构建时自定义)
 - **默认用户名**: root
 - **默认密码**: 无 (首次登录后请修改)
+- **默认 WiFi**:
+  - **SSID**: `ImmortalWrt`
+  - **加密**: WPA2-PSK (psk2)
+  - **密码**: `immortalwrt`
 - **SSH**: 默认启用，端口 22
 
 ## ⚠️ 注意事项
