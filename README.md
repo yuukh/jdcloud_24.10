@@ -24,8 +24,6 @@
 
 ### 📦 预装软件包
 
-> 已移除 Passwall、Docker / Podman 容器全家桶、AdGuard Home、Netdata、ZeroTier。
-
 #### 🌐 网络工具
 
 - **VPN 服务**: WireGuard, OpenVPN Server, IPSec VPN (多用户)
@@ -89,7 +87,6 @@
    - 点击 "Run workflow"
    - 配置构建参数:
      - `LAN IP Address`: 设置路由器登录IP (默认: 192.168.1.1)
-     - `Not build luci-app-dockerman`: 是否跳过Docker管理器编译
 
 3. **下载固件**:
    - 构建完成后在 Actions Artifacts 中下载
@@ -168,9 +165,6 @@ sed -i 's/OpenWrt/P3TERX-Router/g' package/base-files/files/bin/config_generate
 ```bash
 # 添加 helloworld 软件源
 echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.default
-
-# 添加 passwall 软件源
-echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >>feeds.conf.default
 ```
 
 ## 📋 固件信息
