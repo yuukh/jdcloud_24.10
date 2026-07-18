@@ -23,6 +23,11 @@ on:
         required: true
         default: false
         type: boolean
+      BUILD_WRTBWMON:
+        description: 'Build luci-app-wrtbwmon as standalone .ipk (not in firmware)'
+        required: true
+        default: true
+        type: boolean
       ssh:
         description: 'SSH connection to Actions'
         required: false
@@ -166,6 +171,21 @@ jobs:
         echo "FILE_DATE=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
+    - name: 单独编译 wrtbwmon 包 (.ipk)
+      id: wrtbwmon
+      if: github.event.inputs.BUILD_WRTBWMON == 'true'
+      run: |
+        cd openwrt
+        make package/luci-app-wrtbwmon/compile -j$(nproc) V=s || make package/luci-app-wrtbwmon/compile V=s
+        rm -rf wrtbwmon-ipk && mkdir -p wrtbwmon-ipk
+        find bin/packages -name '*wrtbwmon*.ipk' -exec cp -f {} wrtbwmon-ipk/ \; 2>/dev/null || true
+        find wrtbwmon-ipk -name '*.ipk' | sort
+        if [ -n "$(ls -A wrtbwmon-ipk 2>/dev/null)" ]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+        fi
+
     - name: 查看磁盘使用情况
       if: (!cancelled())
       run: df -hT
@@ -181,6 +201,13 @@ jobs:
         rename 's/.*${{ env.DEVICE_NAME }}/${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}/' *
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 上传 wrtbwmon 独立包 (.ipk)
+      uses: actions/upload-artifact@v4
+      if: steps.wrtbwmon.outputs.status == 'success'
+      with:
+        name: wrtbwmon-ipk-${{ env.DEVICE_NAME }}-${{ env.FILE_DATE }}
+        path: openwrt/wrtbwmon-ipk/*.ipk
 
     - name: 打包上传固件到Actions Artifacts
       uses: actions/upload-artifact@main
@@ -202,6 +229,9 @@ jobs:
         else
                 echo "- 未编译luci-app-dockerman" >> release.txt
         fi
+        if [ "${{ steps.wrtbwmon.outputs.status }}" = 'success' ]; then
+                echo "- 已单独编译 luci-app-wrtbwmon (.ipk 随发布提供，未内置入固件)" >> release.txt
+        fi
         echo "release_tag=${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}" >> $GITHUB_OUTPUT
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -211,7 +241,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        files: ${{ env.FIRMWARE }}/*
+        files: |
+          ${{ env.FIRMWARE }}/*
+          openwrt/wrtbwmon-ipk/*.ipk
         name: ${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}
         tag_name: ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt

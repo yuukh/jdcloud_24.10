@@ -35,8 +35,9 @@
   - 网络加速 (TurboACC-MTK)
   - ARP 绑定
 - **网络监控**:
-  - 流量统计 (nlbwmon / wrtbwmon)
+  - 流量统计 (nlbwmon)
   - 系统统计 (statistics / collectd：CPU、内存、网卡)
+  - wrtbwmon 作为独立 `.ipk` 包随发布提供，可在路由器上单独安装
 - **网络测试**: iperf3, tcping, tcpdump, mtr
 - **安全 / 其他**:
   - VLMCSD KMS 服务器
