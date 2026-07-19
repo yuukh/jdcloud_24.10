@@ -166,7 +166,12 @@ sed -i 's/OpenWrt/P3TERX-Router/g' package/base-files/files/bin/config_generate
 ```bash
 # 添加 helloworld 软件源
 echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.default
+
+# 添加 lucky 软件源 (luci-app-lucky 与 lucky 二进制)
+echo 'src-git lucky https://github.com/sirpdboy/luci-app-lucky;main' >>feeds.conf.default
 ```
+
+> 本项目已在 `feeds.conf.default` 中内置 lucky 源。
 
 ## 📋 固件信息
 
