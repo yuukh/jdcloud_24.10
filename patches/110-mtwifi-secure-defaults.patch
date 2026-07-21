@@ -1,0 +1,41 @@
+diff --git a/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh b/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh
+--- a/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh
++++ b/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh
+@@ -7,7 +7,8 @@ append DRIVERS "mtwifi"
+ 
+ detect_mtwifi() {
+ 	local idx ifname
+-	local band hwmode htmode htbsscoex ssid dbdc_main channel
++	local band hwmode htmode htbsscoex ssid dbdc_main channel key
++	key="immortalwrt"
+ 	if [ -d "/sys/module/mt_wifi" ]; then
+ 		dev_list="$(l1util list)"
+ 		for dev in $dev_list; do
+@@ -20,7 +21,7 @@ detect_mtwifi() {
+ 					hwmode="11g"
+ 					htmode="HE40"
+ 					htbsscoex="1"
+-					ssid="ImmortalWrt-2.4G"
++					ssid="ImmortalWrt"
+ 					dbdc_main="1"
+ 					txpower="100"
+ 					channel="auto"
+@@ -29,7 +30,7 @@ detect_mtwifi() {
+ 					hwmode="11a"
+ 					htmode="HE160"
+ 					htbsscoex="0"
+-					ssid="ImmortalWrt-5G"
++					ssid="ImmortalWrt"
+ 					channel="36"
+ 					txpower="100"
+ 					dbdc_main="0"
+@@ -55,7 +56,8 @@ detect_mtwifi() {
+ 					set wireless.default_${dev}.network=lan
+ 					set wireless.default_${dev}.mode=ap
+ 					set wireless.default_${dev}.ssid=${ssid}
+-					set wireless.default_${dev}.encryption=none
++					set wireless.default_${dev}.encryption=psk2
++					set wireless.default_${dev}.key=${key}
+ EOF
+ 				uci -q commit wireless
+ 			}

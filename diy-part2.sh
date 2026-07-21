@@ -10,6 +10,33 @@
 # See /LICENSE for more information.
 #
 
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+apply_source_patch() {
+	local patch_name="$1"
+	local patch_file="$SCRIPT_DIR/patches/$patch_name"
+
+	if patch -p1 --forward --batch --dry-run < "$patch_file" >/dev/null 2>&1; then
+		echo "Applying source patch: $patch_name"
+		patch -p1 --forward --batch < "$patch_file"
+	elif patch -p1 --reverse --batch --dry-run < "$patch_file" >/dev/null 2>&1; then
+		echo "Source patch already applied: $patch_name"
+	else
+		echo "Source patch does not apply cleanly: $patch_name" >&2
+		exit 1
+	fi
+}
+
+# Segment local GSO traffic before PPE reinjection, restore HNAT metadata on
+# every segment, and keep the complete flow on the PPE -> WED -> Wi-Fi path.
+apply_source_patch 100-hnat-cpu-wifi-gso-segmentation.patch
+
+# Set secure MTK Wi-Fi defaults at config-generation time. Existing wireless
+# configuration retained across sysupgrade is intentionally left untouched.
+apply_source_patch 110-mtwifi-secure-defaults.patch
+
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate
 
@@ -18,22 +45,3 @@
 
 # Modify hostname
 #sed -i 's/OpenWrt/P3TERX-Router/g' package/base-files/files/bin/config_generate
-
-# Set default WiFi SSID and password (applied on first boot via uci-defaults)
-cat > package/base-files/files/etc/uci-defaults/99-wifi-defaults <<'EOF'
-#!/bin/sh
-. /lib/functions.sh
-
-SSID="ImmortalWrt"
-KEY="immortalwrt"
-
-# MTK mt_wifi (mtwifi-cfg): default wireless devices are rax0 (2.4G) and rai0 (5G)
-for dev in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\(@wifi-iface\[[0-9]\+\]\)\.device=.*/\1/p' | sort -u); do
-    uci -q set wireless.$dev.ssid="$SSID"
-    uci -q set wireless.$dev.encryption='psk2'
-    uci -q set wireless.$dev.key="$KEY"
-done
-
-uci commit wireless
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-wifi-defaults

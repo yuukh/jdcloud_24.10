@@ -176,7 +176,18 @@ echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.defau
   - **SSID**: `ImmortalWrt`
   - **加密**: WPA2-PSK (psk2)
   - **密码**: `immortalwrt`
+  - 仅在首次生成 MTK 无线配置时写入；升级时保留的现有无线配置不会被覆盖
 - **SSH**: 默认启用，端口 22
+
+### 源码修复
+
+`diy-part2.sh` 会在编译前应用 `patches/` 中的补丁：
+
+- CPU→PPE→Wi-Fi 路径会先把 GSO skb 完整软件分段，再为每个 segment 恢复
+  HNAT 元数据并按顺序送入 PPE/WED，避免 TSO 突发和分段后 `skb->cb` 标记丢失；
+  Mihomo REDIRECT/Fake-IP 回包仍然保留 Wi-Fi 硬件加速。
+- MTK `mtwifi-cfg` 在首次生成无线配置时直接写入默认 SSID、WPA2 加密和密码；
+  不再依赖无法匹配具名 `wifi-iface` 的 `uci-defaults` 正则。
 
 ## ⚠️ 注意事项
 
