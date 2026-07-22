@@ -173,21 +173,17 @@ echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.defau
 - **默认用户名**: root
 - **默认密码**: 无 (首次登录后请修改)
 - **默认 WiFi**:
-  - **SSID**: `ImmortalWrt`
-  - **加密**: WPA2-PSK (psk2)
-  - **密码**: `immortalwrt`
-  - 仅在首次生成 MTK 无线配置时写入；升级时保留的现有无线配置不会被覆盖
+  - **SSID**: `ImmortalWrt-2.4G`、`ImmortalWrt-5G`（支持时还会生成 `ImmortalWrt-6G`）
+  - **加密**: 默认未加密，请首次登录后立即设置无线密码
 - **SSH**: 默认启用，端口 22
 
 ### 源码修复
 
 `diy-part2.sh` 会在编译前应用 `patches/` 中的补丁：
 
-- CPU→PPE→Wi-Fi 路径会先把 GSO skb 完整软件分段，再为每个 segment 恢复
-  HNAT 元数据并按顺序送入 PPE/WED，避免 TSO 突发和分段后 `skb->cb` 标记丢失；
+- CPU→PPE→Wi-Fi 路径会先把 GSO skb 软件分段，再将每个线速大小的 segment
+  递归送入相同的 HNAT→PPE/WED 路径，避免超大帧引发 TCP 重传；
   Mihomo REDIRECT/Fake-IP 回包仍然保留 Wi-Fi 硬件加速。
-- MTK `mtwifi-cfg` 在首次生成无线配置时直接写入默认 SSID、WPA2 加密和密码；
-  不再依赖无法匹配具名 `wifi-iface` 的 `uci-defaults` 正则。
 
 ## ⚠️ 注意事项
 

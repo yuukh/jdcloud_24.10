@@ -14,28 +14,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-apply_source_patch() {
+install_kernel_patch() {
 	local patch_name="$1"
-	local patch_file="$SCRIPT_DIR/patches/$patch_name"
+	local patch_dir="$PWD/target/linux/mediatek/patches-6.6"
 
-	if patch -p1 --forward --batch --dry-run < "$patch_file" >/dev/null 2>&1; then
-		echo "Applying source patch: $patch_name"
-		patch -p1 --forward --batch < "$patch_file"
-	elif patch -p1 --reverse --batch --dry-run < "$patch_file" >/dev/null 2>&1; then
-		echo "Source patch already applied: $patch_name"
-	else
-		echo "Source patch does not apply cleanly: $patch_name" >&2
+	if [ ! -d "$patch_dir" ]; then
+		echo "Kernel patch directory does not exist: $patch_dir" >&2
 		exit 1
 	fi
+
+	echo "Installing kernel patch: $patch_name"
+	install -m 0644 "$SCRIPT_DIR/patches/$patch_name" "$patch_dir/$patch_name"
 }
 
-# Segment local GSO traffic before PPE reinjection, restore HNAT metadata on
-# every segment, and keep the complete flow on the PPE -> WED -> Wi-Fi path.
-apply_source_patch 100-hnat-cpu-wifi-gso-segmentation.patch
-
-# Set secure MTK Wi-Fi defaults at config-generation time. Existing wireless
-# configuration retained across sysupgrade is intentionally left untouched.
-apply_source_patch 110-mtwifi-secure-defaults.patch
+# Segment CPU-generated GSO traffic before WED/PPE reinjection.
+install_kernel_patch 999-9101-hnat-cpu-wifi-gso-fix.patch
 
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate
