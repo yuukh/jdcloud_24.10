@@ -19,7 +19,8 @@
 - **源码仓库**: [padavanonly/immortalwrt-mt798x-6.6](https://github.com/padavanonly/immortalwrt-mt798x-6.6)
 - **根文件系统**: 2048MB 分区大小
 - **支持**: WiFi 6 (802.11ax)、双频并发、硬件加速
-- **WiFi 驱动**: MediaTek 私有 `mt_wifi` 驱动 (MT7986 + MT7976)，固件编译于 2023-08-14
+- **WiFi 驱动**: MediaTek 私有 `mt_wifi` 7.6.7.2（MT7986 + MT7976）
+- **WiFi 固件**: MT7986 `20240823`，并配套 WARP `20231229-5f71ec`、conninfra `f2fa25`、datconf `757f9679`
 - **交换机模型**: DSA (`lan1`~`lan4` + `eth1` WAN)
 
 ### 📦 预装软件包
@@ -120,6 +121,31 @@ make download -j$(nproc)
 make -j$(nproc) || make -j1 V=s
 ```
 
+`diy-part2.sh` 会自动执行 `scripts/port-mtwifi-7672.sh`。该脚本从固定的
+[`lgs2007m/immortalwrt-mt798x` 提交](https://github.com/lgs2007m/immortalwrt-mt798x/commit/181a4ee52239d0fc9c2b38ec22d8ce1dc5c02026)
+下载 7.6.7.2 配套源码和 20240823 固件，逐项校验 SHA-256，再应用本仓库的 Linux 6.6 兼容补丁。
+移植同时将驱动与 `iwinfo` 的中心信道查询 OID 统一到未占用的 `0x09F0/0x09F1`，避开
+7.6.7.2 新增的 `OID_GET_CHANNEL_LIST (0x09C0)` 冲突。
+
+### 刷写与确认版本
+
+7.6.7.2 改变的不只是 `/lib/firmware` 中的文件，还包括 `mt_wifi`、WARP 和 conninfra
+内核模块。因此不要在正在运行的 7.6.6.1 系统上只覆盖五个 `.bin`；请编译并刷写完整
+`sysupgrade.bin`。升级前备份配置并准备好 U-Boot/TFTP 救砖方式。跨驱动版本升级建议不保留
+旧配置；若要保留，至少先备份 `/etc/config/wireless`，出现无线异常时删除该文件并重启让系统重建。
+
+刷写并重启后可检查：
+
+```sh
+uname -r
+iwpriv rax0 show driverinfo
+dmesg | grep -Ei 'AP Driver version|Release info|firmware|WM Firmware'
+sha256sum /lib/firmware/WIFI_RAM_CODE_MT7986.bin
+```
+
+`iwpriv` 应显示 `Driver version: 7.6.7.2`；`WIFI_RAM_CODE_MT7986.bin` 的 SHA-256 应为
+`5eb175d860cc6f148cfa894ec796f1c64bfd23295d3eb235642205b68e147dfc`。
+
 ## 📁 项目文件说明
 
 ### 配置文件
@@ -134,7 +160,10 @@ make -j$(nproc) || make -j1 V=s
   - 当前为模板，可根据需要取消注释相关行
 - **`diy-part2.sh`**: 第二阶段自定义脚本 (feeds 更新后执行)
   - 用于修改默认配置
+  - 移植并校验 `mt_wifi 7.6.7.2 + FW 20240823` 及其配套组件
   - 支持修改默认IP、主题、主机名等
+- **`scripts/port-mtwifi-7672.sh`**: 可复现的 7.6.7.2/Linux 6.6 移植脚本
+- **`patches/`**: `mt_wifi`、WARP、conninfra 的 Linux 6.6 兼容补丁及配套 `iwinfo` 补丁
 
 ### GitHub Actions
 

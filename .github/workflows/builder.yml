@@ -157,6 +157,14 @@ jobs:
         cd openwrt
         echo -e "$(nproc) thread compile"
         make -j$(nproc) V=s || make -j1 V=s
+        grep -Fx 'mt_wifi=7.6.7.2' package/mtk/drivers/mt_wifi/VERSION.v7672
+        grep -Fx 'mt7986_fw=20240823' package/mtk/drivers/mt_wifi/VERSION.v7672
+        for module in mt_wifi.ko mtk_warp.ko conninfra.ko; do
+          find build_dir -type f -name "$module" -print -quit | grep -q . || {
+            echo "Missing compiled module: $module" >&2
+            exit 1
+          }
+        done
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=$(cat DEVICE_NAME)" >> $GITHUB_ENV
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*TARGET_.*_(.*)_DEVICE_.*=y/\1/' > TARGET_NAME
@@ -220,6 +228,9 @@ jobs:
         touch release.txt
         echo "- 使用源码：${{ env.REPO_URL }}" >> release.txt
         echo "- 使用分支：${{ env.REPO_BRANCH }}" >> release.txt
+        echo "- WiFi 驱动：mt_wifi 7.6.7.2" >> release.txt
+        echo "- MT7986 固件：20240823" >> release.txt
+        echo "- 配套组件：WARP 20231229-5f71ec / conninfra f2fa25 / datconf 757f9679" >> release.txt
         echo "- 登录地址：${{ env.IP_ADDR }}" >> release.txt
         if [[ "${{ env.BUILD_DOCKERMAN }}" == '-docker' ]]; then
                 echo "- 已编译luci-app-dockerman" >> release.txt

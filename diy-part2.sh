@@ -10,6 +10,11 @@
 # See /LICENSE for more information.
 #
 
+set -e
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+"$SCRIPT_DIR/scripts/port-mtwifi-7672.sh" "$PWD"
+
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate
 

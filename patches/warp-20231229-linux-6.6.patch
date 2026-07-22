@@ -1,0 +1,277 @@
+diff --git a/warp_bm_v2.c b/warp_bm_v2.c
+--- a/warp_bm_v2.c	2023-12-29 05:52:42.000000000 +0000
++++ b/warp_bm_v2.c	2026-07-20 13:03:29.776680720 +0000
+@@ -1169,7 +1169,7 @@
+ 	for (i = 0; i < ring_len; i++)
+ 		wed_rx_bm_dma_cb_exit(wed, &ring->cell[i]);
+ 
+-	dma_unmap_single(&wed->pdev->dev, desc->alloc_pa, desc->alloc_size, PCI_DMA_FROMDEVICE);
++	dma_unmap_single(&wed->pdev->dev, desc->alloc_pa, desc->alloc_size, DMA_FROM_DEVICE);
+ 	warp_os_free_mem(desc->alloc_va);
+ 	memset(desc, 0, sizeof(*desc));
+ 
+diff --git a/warp_main.c b/warp_main.c
+--- a/warp_main.c	2023-12-29 05:52:42.000000000 +0000
++++ b/warp_main.c	2026-07-20 13:03:29.780013925 +0000
+@@ -1508,5 +1508,4 @@
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION(DRIVER_DESC);
+-MODULE_SUPPORTED_DEVICE("mt7615 within mt7622");
+ 
+diff --git a/warp_proc.c b/warp_proc.c
+--- a/warp_proc.c	2023-12-29 05:52:42.000000000 +0000
++++ b/warp_proc.c	2026-07-20 13:03:29.783347131 +0000
+@@ -21,7 +21,7 @@
+ #include "wed.h"
+ #include "warp.h"
+ #include "warp_hw.h"
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #include "mcu/warp_woif.h"
+ #include "mcu/warp_wo.h"
+ #include "warp_meminfo_list.h"
+@@ -452,6 +452,11 @@
+ 	char *s = value;
+ 	struct warp_entry *warp = (struct warp_entry *)PDE_DATA(file_inode(file));
+ 
++	if (len1 > 64 || len1 == 0) {
++		warp_dbg(WARP_DBG_OFF, "%s(): invalid length len1 %d!\n", __func__, len1);
++		goto end;
++	}
++
+ 	if (buff && !copy_from_user(value, buff, len1)) {
+ 		token = strsep(&s, " ");
+ 		if(!token)
+@@ -1167,118 +1172,105 @@
+ /*
+  * global file operation
+ */
+-static const struct file_operations proc_warp_trace_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_trace_open,
+-	.write  = warp_proc_trace_write,
+-	.read	= seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_trace_fops = {
++	.proc_open = warp_proc_trace_open,
++	.proc_write  = warp_proc_trace_write,
++	.proc_read	= seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_warp_conf_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_conf_open,
+-	.write  = warp_proc_conf_write,
+-	.read	= seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_conf_fops = {
++	.proc_open = warp_proc_conf_open,
++	.proc_write  = warp_proc_conf_write,
++	.proc_read	= seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_warp_cr_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_cr_open,
+-	.write  = warp_proc_cr_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_cr_fops = {
++	.proc_open = warp_proc_cr_open,
++	.proc_write  = warp_proc_cr_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_warp_stat_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_state_open,
+-	.write  = warp_proc_state_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_stat_fops = {
++	.proc_open = warp_proc_state_open,
++	.proc_write  = warp_proc_state_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_warp_cfg_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_cfg_open,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_cfg_fops = {
++	.proc_open = warp_proc_cfg_open,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_warp_tx_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_tx_open,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_tx_fops = {
++	.proc_open = warp_proc_tx_open,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_warp_rx_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_rx_open,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_warp_rx_fops = {
++	.proc_open = warp_proc_rx_open,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_wed_fops = {
+-	.owner = THIS_MODULE,
+-	.open = wed_proc_open,
+-	.write  = wed_proc_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_wed_fops = {
++	.proc_open = wed_proc_open,
++	.proc_write  = wed_proc_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_wdma_fops = {
+-	.owner = THIS_MODULE,
+-	.open = wdma_proc_open,
+-	.write  = wdma_proc_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops  proc_wdma_fops = {
++	.proc_open = wdma_proc_open,
++	.proc_write  = wdma_proc_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_ctrl_fops = {
+-	.owner = THIS_MODULE,
+-	.open = warp_proc_ctrl_open,
+-	.write  = warp_proc_ctrl_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_ctrl_fops = {
++	.proc_open = warp_proc_ctrl_open,
++	.proc_write  = warp_proc_ctrl_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+ 
+-static const struct file_operations proc_rxbm_fops = {
+-	.owner = THIS_MODULE,
+-	.open = rxbm_proc_open,
+-	.write  = rxbm_proc_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_rxbm_fops = {
++	.proc_open = rxbm_proc_open,
++	.proc_write  = rxbm_proc_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_wo_fops = {
+-	.owner = THIS_MODULE,
+-	.open = wo_proc_open,
+-	.write  = wo_proc_write,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_wo_fops = {
++	.proc_open = wo_proc_open,
++	.proc_write  = wo_proc_write,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+-static const struct file_operations proc_woee_fops = {
+-	.owner = THIS_MODULE,
+-	.open = wo_ee_proc_open,
+-	.read  = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
++static const struct proc_ops proc_woee_fops = {
++	.proc_open = wo_ee_proc_open,
++	.proc_read  = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
+ };
+ 
+ 
+diff --git a/warp_ser.c b/warp_ser.c
+--- a/warp_ser.c	2023-12-29 05:52:42.000000000 +0000
++++ b/warp_ser.c	2026-07-20 13:03:29.760014693 +0000
+@@ -287,7 +287,7 @@
+ 
+ 	while (!kthread_should_stop()) {
+ 		wed_ser_detect(wed);
+-		msleep(ser_ctrl->period_time);
++		msleep_interruptible(ser_ctrl->period_time);
+ 	}
+ 	warp_dbg(WARP_DBG_OFF, "%s(): wed_ser exist, wed->irq=%d!\n", __func__,
+ 		 wed->irq);
+diff --git a/warp_utility.h b/warp_utility.h
+--- a/warp_utility.h	2023-12-29 05:52:42.000000000 +0000
++++ b/warp_utility.h	2026-07-20 13:03:29.786680336 +0000
+@@ -44,7 +44,7 @@
+ #define WARP_FAIL_STATUS (-1)
+ #define WARP_OK_STATUS (0)
+ #define WARP_ALREADY_DONE_STATUS (1)
+-
++#define PDE_DATA(i) pde_data(i)
+ enum {
+ 	WARP_DBG_START,
+ 	WARP_DBG_OFF = WARP_DBG_START,
+diff --git a/wdma.c b/wdma.c
+--- a/wdma.c	2023-12-29 05:52:42.000000000 +0000
++++ b/wdma.c	2026-07-20 13:03:29.766681104 +0000
+@@ -65,6 +65,11 @@
+ 	struct warp_ring *ring = &wdma->res_ctrl.rx_ctrl.rx_ring_ctrl.ring[ring_id];
+ 	u8 *addr;
+ 	u32 size;
++	if ((ring_id >= wdma->res_ctrl.rx_ctrl.rx_ring_ctrl.ring_num)
++		|| (idx >= WED_TX_RING_SIZE)) {
++		return;
++	}
++
+ 	/*WDMA Tx Ring content*/
+ 	warp_dbg(WARP_DBG_OFF, "==========WDMA RX RING RAW (%d/0x%x)==========\n",
+ 		 ring_id, idx);
