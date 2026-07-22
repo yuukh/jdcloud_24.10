@@ -202,7 +202,7 @@ echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.defau
 - **默认用户名**: root
 - **默认密码**: 无 (首次登录后请修改)
 - **默认 WiFi**:
-  - **SSID**: `ImmortalWrt`
+  - **SSID**: `ImmortalWrt-2.4G`（2.4 GHz）/ `ImmortalWrt-5G`（5 GHz）
   - **加密**: WPA2-PSK (psk2)
   - **密码**: `immortalwrt`
 - **SSH**: 默认启用，端口 22
