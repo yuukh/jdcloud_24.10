@@ -29,7 +29,23 @@ apply_source_patch() {
 	fi
 }
 
+install_kernel_patch() {
+	local patch_name="$1"
+	local patch_dir="$PWD/target/linux/mediatek/patches-6.6"
+
+	if [ ! -d "$patch_dir" ]; then
+		echo "Kernel patch directory does not exist: $patch_dir" >&2
+		exit 1
+	fi
+
+	echo "Installing kernel patch: $patch_name"
+	install -m 0644 "$SCRIPT_DIR/patches/$patch_name" "$patch_dir/$patch_name"
+}
+
 "$SCRIPT_DIR/scripts/port-mtwifi-7672.sh" "$PWD"
+
+# Keep every descriptor of a CPU-injected GSO/SG skb on the PPE0 path.
+install_kernel_patch 9999-06-hnat-ppe-fport-all-tx-descriptors.patch
 
 # Keep both radios encrypted on a freshly generated MTK Wi-Fi configuration.
 apply_source_patch 110-mtwifi-secure-defaults.patch
