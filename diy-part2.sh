@@ -44,8 +44,8 @@ install_kernel_patch() {
 
 "$SCRIPT_DIR/scripts/port-mtwifi-7672.sh" "$PWD"
 
-# Keep every descriptor of a CPU-injected GSO/SG skb on the PPE0 path.
-install_kernel_patch 9999-06-hnat-ppe-fport-all-tx-descriptors.patch
+# Segment CPU-generated GSO frames before enqueueing them through WED/PPE.
+install_kernel_patch 999-9101-hnat-cpu-wifi-gso-fix-24.10.patch
 
 # Keep both radios encrypted on a freshly generated MTK Wi-Fi configuration.
 apply_source_patch 110-mtwifi-secure-defaults.patch
