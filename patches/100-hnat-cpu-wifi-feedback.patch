@@ -534,14 +534,14 @@ index ee241d0755..c54374d3b3 100644
  }
  
 diff --git a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
-index acda3448db..954cf6ce35 100644
+index acda3448db..052d8ca795 100644
 --- a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
 +++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
 @@ -21,6 +21,7 @@
  #include <linux/reset.h>
  #include <linux/rtnetlink.h>
  #include <net/netlink.h>
-+#include <net/ra_nat.h>
++#include <net/hnat_cpu_wifi.h>
  
  #include "nf_hnat_mtk.h"
  #include "hnat.h"
@@ -583,14 +583,14 @@ index 03a9937986..7c83f9da57 100644
  void mtk_ppe_dev_unregister_hook(struct net_device *dev);
  int nf_hnat_netdevice_event(struct notifier_block *unused, unsigned long event,
 diff --git a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
-index 793c15c2a5..e5e4940615 100644
+index 793c15c2a5..6d57dce3be 100644
 --- a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
 +++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
 @@ -26,6 +26,7 @@
  #include <net/udp.h>
  #include <net/netfilter/nf_conntrack.h>
  #include <net/netfilter/nf_conntrack_acct.h>
-+#include <net/ra_nat.h>
++#include <net/hnat_cpu_wifi.h>
  #include "nf_hnat_mtk.h"
  #include "hnat.h"
  
@@ -661,14 +661,19 @@ index 793c15c2a5..e5e4940615 100644
  	if (!mtk_hnat_nf_post_routing(skb, state->out, 0, __func__ ,false))
  		return NF_ACCEPT;
  
-diff --git a/target/linux/mediatek/files-6.6/include/net/ra_nat.h b/target/linux/mediatek/files-6.6/include/net/ra_nat.h
-index cfca603ad5..212134d630 100644
---- a/target/linux/mediatek/files-6.6/include/net/ra_nat.h
-+++ b/target/linux/mediatek/files-6.6/include/net/ra_nat.h
-@@ -15,6 +15,43 @@
- #define NEXTHDR_IPIP 4
- #endif
- 
+diff --git a/target/linux/mediatek/files-6.6/include/net/hnat_cpu_wifi.h b/target/linux/mediatek/files-6.6/include/net/hnat_cpu_wifi.h
+new file mode 100644
+index 0000000000..87e515ea2d
+--- /dev/null
++++ b/target/linux/mediatek/files-6.6/include/net/hnat_cpu_wifi.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _HNAT_CPU_WIFI_H
++#define _HNAT_CPU_WIFI_H
++
++#include <linux/compiler.h>
++#include <linux/skbuff.h>
++
 +/*
 + * CPU generated traffic is marked at the bridge LOCAL_OUT hook and is only
 + * handed back to PPE after it reaches the Wi-Fi ndo_start_xmit callback.
@@ -706,6 +711,16 @@ index cfca603ad5..212134d630 100644
 +
 +extern int (*ra_sw_nat_hook_cpu_to_wifi)(struct sk_buff *skb);
 +
- #define hwnat_vlan_tx_tag_present(__skb)     ((__skb)->vlan_tci & VLAN_TAG_PRESENT)
- #define hwnat_vlan_tag_get(__skb)         ((__skb)->vlan_tci & ~VLAN_TAG_PRESENT)
++#endif /* _HNAT_CPU_WIFI_H */
+diff --git a/target/linux/mediatek/files-6.6/include/net/ra_nat.h b/target/linux/mediatek/files-6.6/include/net/ra_nat.h
+index cfca603ad5..f12644278f 100644
+--- a/target/linux/mediatek/files-6.6/include/net/ra_nat.h
++++ b/target/linux/mediatek/files-6.6/include/net/ra_nat.h
+@@ -9,6 +9,7 @@
  
+ #include <linux/ip.h>
+ #include <linux/ipv6.h>
++#include <net/hnat_cpu_wifi.h>
+ 
+ 
+ #ifndef NEXTHDR_IPIP
