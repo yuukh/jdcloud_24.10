@@ -163,7 +163,7 @@ sha256sum /lib/firmware/WIFI_RAM_CODE_MT7986.bin
   - 移植并校验 `mt_wifi 7.6.7.2 + FW 20240823` 及其配套组件
   - 支持修改默认IP、主题、主机名等
 - **`scripts/port-mtwifi-7672.sh`**: 可复现的 7.6.7.2/Linux 6.6 移植脚本
-- **`patches/`**: `mt_wifi`、WARP、conninfra 的 Linux 6.6 兼容补丁及配套 `iwinfo` 补丁
+- **`patches/`**: `mt_wifi`、WARP、conninfra 的 Linux 6.6 兼容补丁，以及配套的 `iwinfo` 与 HNAT 补丁
 
 ### GitHub Actions
 
