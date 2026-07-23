@@ -1,0 +1,23 @@
+diff --git a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+--- a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
++++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+@@ -1001,7 +1001,7 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
+ 	return 0;
+ }
+ 
+-static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
++static unsigned int __maybe_unused do_hnat_cpu_to_ge(struct sk_buff *skb)
+ {
+ 	if (unlikely(skb_shinfo(skb)->frag_list))
+                 return -1;
+@@ -2718,8 +2718,8 @@ mtk_hnat_br_nf_local_out(void *priv, struct sk_buff *skb,
+ 
+ 	if ((!strncmp(state->out->name, "ra0",3) || !strncmp(state->out->name, "rax0",4)) && !is_from_extge(skb) && !( FROM_GE_PPD(skb) || FROM_GE_LAN(skb) ||
+ 		   FROM_GE_WAN(skb) || FROM_WED(skb) || FROM_EXT(skb) || FROM_GE_VIRTUAL(skb))){
+-		if (!do_hnat_cpu_to_ge(skb))
+-              		return NF_STOLEN;	
++		/* Keep router-originated Wi-Fi traffic on the normal stack. */
++		return NF_ACCEPT;
+         }
+ 	if (!mtk_hnat_nf_post_routing(skb, state->out, 0, __func__ ,false))
+ 		return NF_ACCEPT;
