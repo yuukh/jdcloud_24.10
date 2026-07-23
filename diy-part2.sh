@@ -29,9 +29,9 @@ apply_source_patch() {
 	fi
 }
 
-# Segment local GSO traffic before PPE reinjection, restore HNAT metadata on
-# every segment, and keep the complete flow on the PPE -> WED -> Wi-Fi path.
-apply_source_patch 100-hnat-cpu-wifi-gso-segmentation.patch
+# Keep CPU -> Wi-Fi HNAT, but move admission behind the Wi-Fi qdisc/GSO
+# validation and make WARP stop/wake the netdev from WED hardware feedback.
+apply_source_patch 100-hnat-cpu-wifi-feedback.patch
 
 # Set secure MTK Wi-Fi defaults at config-generation time. Existing wireless
 # configuration retained across sysupgrade is intentionally left untouched.
