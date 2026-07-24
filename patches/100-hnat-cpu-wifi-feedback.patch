@@ -28,28 +28,27 @@ index 95b0d08a9f..2bb9a46d46 100644
  		/*		pNetDev->get_wireless_stats = rt28xx_get_wireless_stats; */
  		pNetDev->get_wireless_stats = pDevOpHook->get_wstats;
 diff --git a/package/mtk/drivers/mt_wifi/src/mt_wifi/os/linux/rt_main_dev.c b/package/mtk/drivers/mt_wifi/src/mt_wifi/os/linux/rt_main_dev.c
-index c116cabca5..1b7fd9522d 100644
+index c116cabca5..3fffc44757 100644
 --- a/package/mtk/drivers/mt_wifi/src/mt_wifi/os/linux/rt_main_dev.c
 +++ b/package/mtk/drivers/mt_wifi/src/mt_wifi/os/linux/rt_main_dev.c
-@@ -32,6 +32,12 @@
+@@ -32,6 +32,11 @@
  #include "rt_os_util.h"
  #include "rt_os_net.h"
  #include <linux/ethtool.h>
 +#ifdef WHNAT_SUPPORT
 +#include <net/ra_nat.h>
 +
-+extern int warp_cpu_wifi_xmit(void *priv_data, struct sk_buff *skb,
-+			      struct net_device *netdev);
++extern int warp_cpu_wifi_xmit(void *priv_data, struct sk_buff *skb);
 +#endif
  /*---------------------------------------------------------------------*/
  /* Private Variables Used                                              */
  /*---------------------------------------------------------------------*/
-@@ -765,11 +771,27 @@ int rt28xx_packet_xmit(void *pkt)
+@@ -765,11 +770,25 @@ int rt28xx_packet_xmit(void *pkt)
   */
  int rt28xx_send_packets(struct sk_buff *skb, struct net_device *ndev)
  {
 +#ifdef WHNAT_SUPPORT
-+	void *pAd = NULL;
++	void *adapter = NULL;
 +	int hnat_ret;
 +#endif
 +
@@ -59,11 +58,9 @@ index c116cabca5..1b7fd9522d 100644
  	}
  
 +#ifdef WHNAT_SUPPORT
-+	GET_PAD_FROM_NET_DEV(pAd, ndev);
-+	if (pAd) {
-+		hnat_ret = warp_cpu_wifi_xmit(pAd, skb, ndev);
-+		if (hnat_ret == HNAT_CPU_WIFI_XMIT_BUSY)
-+			return NETDEV_TX_BUSY;
++	GET_PAD_FROM_NET_DEV(adapter, ndev);
++	if (adapter) {
++		hnat_ret = warp_cpu_wifi_xmit(adapter, skb);
 +		if (hnat_ret == HNAT_CPU_WIFI_XMIT_CONSUMED)
 +			return NETDEV_TX_OK;
 +	}
@@ -72,51 +69,42 @@ index c116cabca5..1b7fd9522d 100644
  	os_zero_mem((PUCHAR)&skb->cb[CB_OFF], CB_LEN);
  	MEM_DBG_PKT_ALLOC_INC(skb);
  	return rt28xx_packet_xmit(skb);
-@@ -1025,4 +1047,3 @@ struct net_device_stats *RT28xx_get_wds_ether_stats(
+@@ -1025,4 +1044,3 @@ struct net_device_stats *RT28xx_get_wds_ether_stats(
  	}
  }
  #endif /* WDS_SUPPORT */
 -
 diff --git a/package/mtk/drivers/warp/src/warp.h b/package/mtk/drivers/warp/src/warp.h
-index 70e9e82007..a5dd9a9955 100644
+index 70e9e82007..fb2071925d 100644
 --- a/package/mtk/drivers/warp/src/warp.h
 +++ b/package/mtk/drivers/warp/src/warp.h
-@@ -17,6 +17,9 @@
+@@ -17,6 +17,8 @@
  #ifndef _WARP_H
  #define _WARP_H
  
-+#include <linux/hrtimer.h>
 +#include <linux/netdevice.h>
 +
  #include "wdma.h"
  #include "wed.h"
  #include "warp_wifi.h"
-@@ -42,6 +45,24 @@ struct warp_wifi_cr_map {
+@@ -42,6 +44,16 @@ struct warp_wifi_cr_map {
  };
  
  #define MAX_MAP_TABLE_SIZE 32
-+#define WARP_CPU_WIFI_MAX_BLOCKED_DEVS 16
 +
 +struct warp_cpu_wifi_fc {
-+	spinlock_t lock;
-+	struct hrtimer wake_timer;
-+	struct net_device *blocked[WARP_CPU_WIFI_MAX_BLOCKED_DEVS];
-+	u32 last_alloc_mib;
-+	u32 reserved;
-+	u16 baseline_free;
++	spinlock_t lock; /* protects the diagnostic counters below */
 +	u16 last_free;
 +	u16 last_ring_queued;
-+	bool mib_valid;
 +	u64 admitted;
-+	u64 busy;
++	u64 pressure_fallback;
 +	u64 fallback;
-+	u64 wakes;
 +};
 +
  struct warp_entry {
  	u8 idx;
  	u8 slot_id;
-@@ -54,6 +75,7 @@ struct warp_entry {
+@@ -54,6 +66,7 @@ struct warp_entry {
  	struct warp_wifi_cr_map mtbl[MAX_MAP_TABLE_SIZE];
  	struct warp_msg_ctrl msg_ctrl[MAX_MODULE_ID];
  	struct woif_entry woif;
@@ -124,13 +112,12 @@ index 70e9e82007..a5dd9a9955 100644
  	void *proc;
  	void *proc_stat;
  	void *proc_cr;
-@@ -127,6 +149,13 @@ warp_page_hash_get(void *priv_data, dma_addr_t pa);
+@@ -127,6 +140,12 @@ warp_page_hash_get(void *priv_data, dma_addr_t pa);
  int
  warp_wlan_tx(void *priv_data, u8 *tx_info);
  
 +int
-+warp_cpu_wifi_xmit(void *priv_data, struct sk_buff *skb,
-+		   struct net_device *netdev);
++warp_cpu_wifi_xmit(void *priv_data, struct sk_buff *skb);
 +
 +void
 +warp_cpu_wifi_configure_netdev(struct net_device *netdev);
@@ -139,7 +126,7 @@ index 70e9e82007..a5dd9a9955 100644
  warp_wlan_rx(void *priv_data, u8 *rx_info);
  
 diff --git a/package/mtk/drivers/warp/src/warp_main.c b/package/mtk/drivers/warp/src/warp_main.c
-index 1323382c96..0697faefd2 100644
+index 1323382c96..8a3d552363 100644
 --- a/package/mtk/drivers/warp/src/warp_main.c
 +++ b/package/mtk/drivers/warp/src/warp_main.c
 @@ -18,6 +18,7 @@
@@ -150,14 +137,14 @@ index 1323382c96..0697faefd2 100644
  
  #include "warp.h"
  #include "warp_hw.h"
-@@ -65,6 +66,31 @@ extern void wo_exep_proc_exit(struct warp_entry *warp);
+@@ -65,6 +66,26 @@ extern void wo_exep_proc_exit(struct warp_entry *warp);
  /* protection for attacking if hacker modify the DTS. */
  #define WED_MAX_NUM 8
  
-+static unsigned int cpu_wifi_credit_window = 128;
-+module_param(cpu_wifi_credit_window, uint, 0644);
-+MODULE_PARM_DESC(cpu_wifi_credit_window,
-+		 "Maximum WED TX buffer credits reserved for CPU-to-WiFi HNAT");
++static unsigned int cpu_wifi_bm_low_watermark = 512;
++module_param(cpu_wifi_bm_low_watermark, uint, 0644);
++MODULE_PARM_DESC(cpu_wifi_bm_low_watermark,
++		 "WED TX buffers kept free before CPU-to-WiFi HNAT falls back");
 +
 +static unsigned int cpu_wifi_ring_window = 128;
 +module_param(cpu_wifi_ring_window, uint, 0644);
@@ -174,35 +161,27 @@ index 1323382c96..0697faefd2 100644
 +MODULE_PARM_DESC(cpu_wifi_gso_max_segs,
 +		 "Maximum GSO segments admitted to CPU-to-WiFi HNAT");
 +
-+static unsigned int cpu_wifi_credit_poll_us = 250;
-+module_param(cpu_wifi_credit_poll_us, uint, 0644);
-+MODULE_PARM_DESC(cpu_wifi_credit_poll_us,
-+		 "WED credit poll interval after the WiFi queue is stopped");
-+
  static struct warp_ctrl sys_wc;
  
  /*
-@@ -282,6 +308,289 @@ warp_entry_get_by_idx(u8 wed_idx)
+@@ -282,6 +303,135 @@ warp_entry_get_by_idx(u8 wed_idx)
  	return NULL;
  }
  
 +static bool
-+warp_cpu_wifi_credit_available(struct warp_entry *warp, u32 needed,
-+			       bool reserve, bool wake_level)
++warp_cpu_wifi_hw_ready(struct warp_entry *warp, u32 needed)
 +{
 +	struct warp_cpu_wifi_fc *fc = &warp->cpu_wifi_fc;
-+	u32 status, alloc_mib, ring_cnt, ring_cidx, ring_didx;
-+	u32 delta, used, effective, window, ring_window, ring_queued;
++	u32 status, ring_cnt, ring_cidx, ring_didx;
++	u32 low_watermark, ring_window, ring_queued;
 +	unsigned long flags;
 +	u16 free;
-+	bool available;
++	bool ready;
 +
 +	if (!warp->wed.base_addr)
 +		return false;
 +
 +	warp_io_read32(&warp->wed, WED_TX_BM_STS, &status);
-+	warp_io_read32(&warp->wed,
-+		       WED_TX_BM_TO_WDMA_RX_DRV_SKBID_MIB, &alloc_mib);
 +	warp_io_read32(&warp->wed, WED_WPDMA_TX1_CTRL1, &ring_cnt);
 +	warp_io_read32(&warp->wed, WED_WPDMA_TX1_CTRL2, &ring_cidx);
 +	warp_io_read32(&warp->wed, WED_WPDMA_TX1_CTRL3, &ring_didx);
@@ -215,8 +194,9 @@ index 1323382c96..0697faefd2 100644
 +	ring_queued = ring_cidx >= ring_didx ?
 +		      ring_cidx - ring_didx :
 +		      ring_cidx - ring_didx + ring_cnt;
-+	window = clamp_t(u32, cpu_wifi_credit_window,
-+			 max_t(u32, 32, cpu_wifi_gso_max_segs * 2), 4096);
++	low_watermark = clamp_t(u32, cpu_wifi_bm_low_watermark,
++				max_t(u32, 32, cpu_wifi_gso_max_segs * 2),
++				0xffff);
 +	ring_window = clamp_t(u32, cpu_wifi_ring_window,
 +			      min_t(u32, max_t(u32, 32,
 +					       cpu_wifi_gso_max_segs * 2),
@@ -224,167 +204,18 @@ index 1323382c96..0697faefd2 100644
 +			      ring_cnt - 1);
 +
 +	spin_lock_irqsave(&fc->lock, flags);
-+
-+	if (!fc->baseline_free || free > fc->baseline_free)
-+		fc->baseline_free = free;
 +	fc->last_free = free;
 +	fc->last_ring_queued = ring_queued;
-+
-+	if (!fc->mib_valid) {
-+		fc->last_alloc_mib = alloc_mib;
-+		fc->mib_valid = true;
-+	} else {
-+		delta = alloc_mib - fc->last_alloc_mib;
-+		fc->last_alloc_mib = alloc_mib;
-+		if (delta >= fc->reserved)
-+			fc->reserved = 0;
-+		else
-+			fc->reserved -= delta;
-+	}
-+
-+	used = fc->baseline_free > free ?
-+	       fc->baseline_free - free : 0;
-+	effective = used + fc->reserved;
-+
-+	if (wake_level)
-+		available = effective <= window / 2 &&
-+			    ring_queued <= ring_window / 2;
-+	else
-+		available = effective + needed <= window &&
-+			    ring_queued + needed <= ring_window;
-+
-+	if (available && reserve)
-+		fc->reserved += needed;
-+
-+	spin_unlock_irqrestore(&fc->lock, flags);
-+	return available;
-+}
-+
-+static enum hrtimer_restart
-+warp_cpu_wifi_wake_timer(struct hrtimer *timer)
-+{
-+	struct warp_cpu_wifi_fc *fc =
-+		container_of(timer, struct warp_cpu_wifi_fc, wake_timer);
-+	struct warp_entry *warp =
-+		container_of(fc, struct warp_entry, cpu_wifi_fc);
-+	struct net_device *blocked[WARP_CPU_WIFI_MAX_BLOCKED_DEVS] = {};
-+	unsigned long flags;
-+	bool have_running = false;
-+	int i;
-+
-+	spin_lock_irqsave(&fc->lock, flags);
-+	for (i = 0; i < ARRAY_SIZE(fc->blocked); i++) {
-+		if (!fc->blocked[i])
-+			continue;
-+		if (netif_running(fc->blocked[i])) {
-+			have_running = true;
-+			continue;
-+		}
-+		blocked[i] = fc->blocked[i];
-+		fc->blocked[i] = NULL;
-+	}
 +	spin_unlock_irqrestore(&fc->lock, flags);
 +
-+	for (i = 0; i < ARRAY_SIZE(blocked); i++) {
-+		if (blocked[i]) {
-+			dev_put(blocked[i]);
-+			blocked[i] = NULL;
-+		}
-+	}
-+
-+	if (!have_running)
-+		return HRTIMER_NORESTART;
-+
-+	if (!warp_cpu_wifi_credit_available(warp, 0, false, true)) {
-+		hrtimer_forward_now(timer,
-+			ns_to_ktime(clamp_t(u32, cpu_wifi_credit_poll_us,
-+					   50, 2000) * NSEC_PER_USEC));
-+		return HRTIMER_RESTART;
-+	}
-+
-+	spin_lock_irqsave(&fc->lock, flags);
-+	for (i = 0; i < ARRAY_SIZE(fc->blocked); i++) {
-+		blocked[i] = fc->blocked[i];
-+		fc->blocked[i] = NULL;
-+	}
-+	spin_unlock_irqrestore(&fc->lock, flags);
-+
-+	for (i = 0; i < ARRAY_SIZE(blocked); i++) {
-+		if (!blocked[i])
-+			continue;
-+		if (netif_running(blocked[i]))
-+			netif_wake_queue(blocked[i]);
-+		dev_put(blocked[i]);
-+	}
-+
-+	spin_lock_irqsave(&fc->lock, flags);
-+	fc->wakes++;
-+	spin_unlock_irqrestore(&fc->lock, flags);
-+
-+	return HRTIMER_NORESTART;
-+}
-+
-+static bool
-+warp_cpu_wifi_block_netdev(struct warp_entry *warp,
-+			   struct net_device *netdev)
-+{
-+	struct warp_cpu_wifi_fc *fc = &warp->cpu_wifi_fc;
-+	unsigned long flags;
-+	int i, free_slot = -1;
-+	bool found = false;
-+
-+	spin_lock_irqsave(&fc->lock, flags);
-+	for (i = 0; i < ARRAY_SIZE(fc->blocked); i++) {
-+		if (fc->blocked[i] == netdev) {
-+			found = true;
-+			break;
-+		}
-+		if (!fc->blocked[i] && free_slot < 0)
-+			free_slot = i;
-+	}
-+
-+	if (!found && free_slot >= 0) {
-+		dev_hold(netdev);
-+		fc->blocked[free_slot] = netdev;
-+		found = true;
-+	}
-+	if (found)
-+		fc->busy++;
-+	else
-+		fc->fallback++;
-+	spin_unlock_irqrestore(&fc->lock, flags);
-+
-+	if (!found)
-+		return false;
-+
-+	netif_stop_queue(netdev);
-+	hrtimer_start(&fc->wake_timer,
-+		      ns_to_ktime(clamp_t(u32, cpu_wifi_credit_poll_us,
-+					 50, 2000) * NSEC_PER_USEC),
-+		      HRTIMER_MODE_REL_PINNED);
-+	return true;
-+}
-+
-+static void
-+warp_cpu_wifi_release_blocked(struct warp_entry *warp)
-+{
-+	struct warp_cpu_wifi_fc *fc = &warp->cpu_wifi_fc;
-+	struct net_device *blocked[WARP_CPU_WIFI_MAX_BLOCKED_DEVS] = {};
-+	unsigned long flags;
-+	int i;
-+
-+	hrtimer_cancel(&fc->wake_timer);
-+
-+	spin_lock_irqsave(&fc->lock, flags);
-+	for (i = 0; i < ARRAY_SIZE(fc->blocked); i++) {
-+		blocked[i] = fc->blocked[i];
-+		fc->blocked[i] = NULL;
-+	}
-+	spin_unlock_irqrestore(&fc->lock, flags);
-+
-+	for (i = 0; i < ARRAY_SIZE(blocked); i++)
-+		if (blocked[i])
-+			dev_put(blocked[i]);
++	/*
++	 * The CPU-to-PPE hand-off has no per-packet WED completion callback.
++	 * Only gate on resources that hardware reports as currently available;
++	 * never stop the shared Wi-Fi netdev queue based on inferred credits.
++	 */
++	ready = free >= low_watermark + needed &&
++		ring_queued + needed <= ring_window;
++	return ready;
 +}
 +
 +void
@@ -408,11 +239,11 @@ index 1323382c96..0697faefd2 100644
 +EXPORT_SYMBOL(warp_cpu_wifi_configure_netdev);
 +
 +int
-+warp_cpu_wifi_xmit(void *priv_data, struct sk_buff *skb,
-+		   struct net_device *netdev)
++warp_cpu_wifi_xmit(void *priv_data, struct sk_buff *skb)
 +{
 +	struct warp_entry *warp;
 +	struct warp_cpu_wifi_fc *fc;
++	int (*cpu_to_wifi)(struct sk_buff *skb);
 +	unsigned long flags;
 +	u32 needed;
 +	int ret;
@@ -421,7 +252,8 @@ index 1323382c96..0697faefd2 100644
 +		return HNAT_CPU_WIFI_XMIT_FALLBACK;
 +
 +	warp = warp_entry_get_by_privdata(priv_data);
-+	if (!warp || !warp->cfg.hw_tx_en || !ra_sw_nat_hook_cpu_to_wifi) {
++	cpu_to_wifi = READ_ONCE(ra_sw_nat_hook_cpu_to_wifi);
++	if (!warp || !warp->cfg.hw_tx_en || !cpu_to_wifi) {
 +		hnat_cpu_wifi_clear_pending(skb);
 +		return HNAT_CPU_WIFI_XMIT_FALLBACK;
 +	}
@@ -444,25 +276,21 @@ index 1323382c96..0697faefd2 100644
 +		return HNAT_CPU_WIFI_XMIT_FALLBACK;
 +	}
 +
-+	if (!warp_cpu_wifi_credit_available(warp, needed, true, false)) {
-+		if (warp_cpu_wifi_block_netdev(warp, netdev))
-+			return HNAT_CPU_WIFI_XMIT_BUSY;
-+
++	if (!warp_cpu_wifi_hw_ready(warp, needed)) {
 +		hnat_cpu_wifi_clear_pending(skb);
++		spin_lock_irqsave(&fc->lock, flags);
++		fc->pressure_fallback++;
++		fc->fallback++;
++		spin_unlock_irqrestore(&fc->lock, flags);
 +		return HNAT_CPU_WIFI_XMIT_FALLBACK;
 +	}
 +
-+	ret = ra_sw_nat_hook_cpu_to_wifi(skb);
++	ret = cpu_to_wifi(skb);
 +	spin_lock_irqsave(&fc->lock, flags);
-+	if (ret == HNAT_CPU_WIFI_XMIT_CONSUMED) {
++	if (ret == HNAT_CPU_WIFI_XMIT_CONSUMED)
 +		fc->admitted += needed;
-+	} else {
-+		if (fc->reserved >= needed)
-+			fc->reserved -= needed;
-+		else
-+			fc->reserved = 0;
++	else
 +		fc->fallback++;
-+	}
 +	spin_unlock_irqrestore(&fc->lock, flags);
 +
 +	return ret;
@@ -472,68 +300,51 @@ index 1323382c96..0697faefd2 100644
  
  /*
  *
-@@ -518,6 +827,10 @@ warp_entry_init(struct warp_entry *warp, u32 idx)
+@@ -518,6 +668,7 @@ warp_entry_init(struct warp_entry *warp, u32 idx)
  	warp->slot_id = wed_get_slot_map(idx);
  	memset(&warp->wifi, 0, sizeof(struct wifi_entry));
  	memset(cfg, 0, sizeof(*cfg));
 +	spin_lock_init(&warp->cpu_wifi_fc.lock);
-+	hrtimer_init(&warp->cpu_wifi_fc.wake_timer,
-+		     CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED);
-+	warp->cpu_wifi_fc.wake_timer.function = warp_cpu_wifi_wake_timer;
  	cfg->hw_tx_en = CFG_HW_TX_SUPPORT;
  	cfg->atc_en = CFG_ATC_SUPPORT;
  	return 0;
-@@ -529,6 +842,7 @@ warp_entry_init(struct warp_entry *warp, u32 idx)
- static void
- warp_entry_exit(struct warp_entry *warp)
- {
-+	warp_cpu_wifi_release_blocked(warp);
- 	if (warp->wifi.hw.priv != NULL)
- 		warp_client_remove(warp->wifi.hw.priv);
- }
-@@ -1763,4 +2077,3 @@ module_exit(warp_module_exit);
+@@ -1763,4 +1914,3 @@ module_exit(warp_module_exit);
  
  MODULE_LICENSE("GPL");
  MODULE_DESCRIPTION(DRIVER_DESC);
 -
 diff --git a/package/mtk/drivers/warp/src/warp_proc.c b/package/mtk/drivers/warp/src/warp_proc.c
-index ee241d0755..c54374d3b3 100644
+index ee241d0755..44f46dc59e 100644
 --- a/package/mtk/drivers/warp/src/warp_proc.c
 +++ b/package/mtk/drivers/warp/src/warp_proc.c
-@@ -835,8 +835,36 @@ static int
+@@ -835,8 +835,30 @@ static int
  warp_proc_cfg_show(struct seq_file *seq, void *v)
  {
  	struct warp_entry *warp = (struct warp_entry *)seq->private;
 +	struct warp_cpu_wifi_fc *fc = &warp->cpu_wifi_fc;
 +	unsigned long flags;
-+	u32 reserved;
-+	u16 baseline_free, last_free, last_ring_queued;
-+	u64 admitted, busy, fallback, wakes;
++	u16 last_free, last_ring_queued;
++	u64 admitted, pressure_fallback, fallback;
  
  	warp_procinfo_dump_cfg_hw(warp, seq);
 +
 +	spin_lock_irqsave(&fc->lock, flags);
-+	reserved = fc->reserved;
-+	baseline_free = fc->baseline_free;
 +	last_free = fc->last_free;
 +	last_ring_queued = fc->last_ring_queued;
 +	admitted = fc->admitted;
-+	busy = fc->busy;
++	pressure_fallback = fc->pressure_fallback;
 +	fallback = fc->fallback;
-+	wakes = fc->wakes;
 +	spin_unlock_irqrestore(&fc->lock, flags);
 +
 +	seq_puts(seq, "==========CPU-to-WiFi HNAT flow control:==========\n");
-+	seq_printf(seq, "baseline_free\t:%u\n", baseline_free);
 +	seq_printf(seq, "last_free\t:%u\n", last_free);
 +	seq_printf(seq, "wpdma_tx1_queued\t:%u\n", last_ring_queued);
-+	seq_printf(seq, "software_reserved\t:%u\n", reserved);
 +	seq_printf(seq, "admitted_segments\t:%llu\n",
 +		   (unsigned long long)admitted);
-+	seq_printf(seq, "busy_events\t:%llu\n", (unsigned long long)busy);
++	seq_printf(seq, "pressure_fallback_events\t:%llu\n",
++		   (unsigned long long)pressure_fallback);
 +	seq_printf(seq, "fallback_events\t:%llu\n",
 +		   (unsigned long long)fallback);
-+	seq_printf(seq, "wake_events\t:%llu\n", (unsigned long long)wakes);
  	return 0;
  }
  
@@ -667,10 +478,10 @@ index 793c15c2a5..6d57dce3be 100644
  
 diff --git a/target/linux/mediatek/files-6.6/include/net/hnat_cpu_wifi.h b/target/linux/mediatek/files-6.6/include/net/hnat_cpu_wifi.h
 new file mode 100644
-index 0000000000..87e515ea2d
+index 0000000000..4b56e21ddf
 --- /dev/null
 +++ b/target/linux/mediatek/files-6.6/include/net/hnat_cpu_wifi.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,44 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef _HNAT_CPU_WIFI_H
 +#define _HNAT_CPU_WIFI_H
@@ -710,7 +521,6 @@ index 0000000000..87e515ea2d
 +enum hnat_cpu_wifi_xmit_result {
 +	HNAT_CPU_WIFI_XMIT_FALLBACK,
 +	HNAT_CPU_WIFI_XMIT_CONSUMED,
-+	HNAT_CPU_WIFI_XMIT_BUSY,
 +};
 +
 +extern int (*ra_sw_nat_hook_cpu_to_wifi)(struct sk_buff *skb);
