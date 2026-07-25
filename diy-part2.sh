@@ -44,8 +44,9 @@ install_kernel_patch() {
 
 "$SCRIPT_DIR/scripts/port-mtwifi-7672.sh" "$PWD"
 
-# Do not leak PPE/FORCE_TO_CPU state to later packets in the same RX poll.
-install_kernel_patch 9999-04-fix-mtk-rx-sent-ppd-state-leak.patch
+# Keep every descriptor of a CPU-injected GSO/SG skb on PPE0 and do not
+# leak PPE/FORCE_TO_CPU state to later packets in the same RX poll.
+install_kernel_patch 9999-04-fix-cpu-wifi-hnat-qdma-and-ppd.patch
 
 # Keep both radios encrypted on a freshly generated MTK Wi-Fi configuration.
 apply_source_patch 110-mtwifi-secure-defaults.patch
