@@ -1,0 +1,72 @@
+From: Codex <codex@openai.com>
+Date: Sat, 25 Jul 2026 00:00:00 +0000
+Subject: [PATCH] net: mediatek: preserve ordering for CPU-to-WiFi HNAT GSO
+
+Local TCP output reaches the CPU-to-WiFi HNAT path as non-linear GSO
+skbs, typically containing 44 1460-byte segments.  do_hnat_cpu_to_ge()
+currently reinjects the complete skb through the Ethernet QDMA engine,
+where it is hardware-segmented before entering PPE and WED.
+
+Client-side captures show that the resulting TCP and IPv4 sequences are
+valid within each GSO batch but that consecutive batches are interleaved
+on the PPE/WED output path.  The most common sequence holes are exactly
+44 segments and multiples thereof.  Checksums remain valid, and the same
+traffic is ordered when it bypasses HNAT.
+
+Segment only CPU-to-WiFi GSO skbs in software before PPE reinjection.
+Every resulting wire-sized skb still follows the existing HNAT, PPE and
+WED path; routed forwarding and non-GSO traffic are unchanged.  This
+also leaves the QDMA SG FPORT fix applicable to any non-linear segment
+without relying on QDMA hardware TSO to preserve inter-batch ordering.
+
+Signed-off-by: Codex <codex@openai.com>
+---
+ drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c | 28 +++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+--- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+@@ -26,6 +26,7 @@
+ #include <net/udp.h>
+ #include <net/netfilter/nf_conntrack.h>
+ #include <net/netfilter/nf_conntrack_acct.h>
++#include <net/gso.h>
+ #include "nf_hnat_mtk.h"
+ #include "hnat.h"
+ 
+@@ -1007,6 +1008,33 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
+                 return -1;
+ 	if (unlikely(skb->mark == HNAT_EXCEPTION_TAG))
+ 				return -1;
++
++	/* QDMA hardware TSO does not preserve the order of consecutive GSO
++	 * batches after CPU-to-PPE reinjection.  Segment here while the skb
++	 * still has its original protocol and header metadata.  Each segment
++	 * is then prepared and submitted through the normal HNAT path below.
++	 */
++	if (skb_is_gso(skb)) {
++		struct sk_buff *segs, *seg, *next;
++		netdev_features_t features;
++
++		if (unlikely(!hnat_priv->g_ppdev) ||
++		    unlikely(!(hnat_priv->g_ppdev->flags & IFF_UP)))
++			return -1;
++
++		features = hnat_priv->g_ppdev->features & ~NETIF_F_GSO_MASK;
++		segs = skb_gso_segment(skb, features);
++		if (IS_ERR_OR_NULL(segs))
++			return -1;
++
++		consume_skb(skb);
++		skb_list_walk_safe(segs, seg, next) {
++			skb_mark_not_on_list(seg);
++			if (unlikely(do_hnat_cpu_to_ge(seg)))
++				dev_kfree_skb_any(seg);
++		}
++		return 0;
++	}
+ 	if (unlikely(skb_headroom(skb) < (FOE_INFO_LEN + ETH_HLEN))) {
+                 if(unlikely(skb_cow(skb, FOE_INFO_LEN + ETH_HLEN)))
+                 return -1;
+-- 
+2.45.0

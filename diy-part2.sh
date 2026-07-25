@@ -48,6 +48,10 @@ install_kernel_patch() {
 # leak PPE/FORCE_TO_CPU state to later packets in the same RX poll.
 install_kernel_patch 9999-04-fix-cpu-wifi-hnat-qdma-and-ppd.patch
 
+# Do not pass a local-to-WiFi GSO super-frame through QDMA hardware TSO.
+# The resulting wire-sized packets still use the normal PPE/WED path.
+install_kernel_patch 9999-05-fix-cpu-wifi-hnat-gso-ordering.patch
+
 # Keep both radios encrypted on a freshly generated MTK Wi-Fi configuration.
 apply_source_patch 110-mtwifi-secure-defaults.patch
 
