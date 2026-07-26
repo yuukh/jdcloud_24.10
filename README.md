@@ -152,8 +152,14 @@ sha256sum /lib/firmware/WIFI_RAM_CODE_MT7986.bin
 分段，再进入 PPE0→WED。HNAT reinjection 会在 Ethernet driver 建立 descriptor
 之前把跨设备遗留的 WiFi TX queue mapping 规范为 QDMA QID 0；同一个 TSO skb
 的所有 SG descriptor 使用相同 PPE0 FPORT，并在该 TSO skb 末尾独立发布 QDMA
-context pointer。普通 Ethernet、非 HNAT 和非 GSO 流量仍使用原有队列选择及
-`xmit_more` 批处理。
+context pointer。
+
+客户端抓包确认，QDMA 对单个 GSO skb 的分段基本有序，但允许多个约 64 KiB TSO
+展开同时在途时，完整批次会在 PPE/WED 前后相互超越。驱动因此只对 CPU→PPE
+hardware TSO 增加 descriptor completion fence：上一批的最后一个 SG descriptor
+被 QDMA completion 回收后才放行下一批，等待期间的小 skb 也不能越过它。该栅栏
+不做软件分段、不线性化 skb，也不关闭 TSO/SG；UDP、普通 Ethernet 和非 HNAT
+流量仍使用原有并发队列及 `xmit_more` 批处理。
 
 ## 📁 项目文件说明
 

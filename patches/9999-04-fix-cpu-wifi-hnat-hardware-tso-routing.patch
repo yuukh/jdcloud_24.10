@@ -1,44 +1,78 @@
 From: Codex <codex@openai.com>
 Date: Sun, 26 Jul 2026 00:00:00 +0000
-Subject: [PATCH] net: mediatek: make CPU-to-WiFi HNAT hardware TSO ordered
+Subject: [PATCH] net: mediatek: serialize CPU-to-WiFi HNAT hardware TSO
 
 CPU-local traffic is first queued for the WiFi netdev.  The TCP socket
 therefore caches a WiFi TX queue in sk_tx_queue_mapping.  HNAT later
 redirects the same skb to the Ethernet QDMA device.  Since that queue
 number is also valid on the 64-queue Ethernet device, netdev_pick_tx()
 keeps it and the driver interprets a WiFi queue as a QDMA hardware QID.
-Successive TSO batches can consequently enter independently scheduled
-QDMA queues before PPE/WED.
-
-Runtime A/B captures confirm the queue leak: fixing the CPU-to-PPE QID at
-zero reduced iperf retransmissions to 0, 0 and 11 in three runs, while
-publish granularity, SG linearization and software checksumming did not
-provide a repeatable result.  It also reduced client-side out-of-order
-packets from thousands per run to 166, 0 and 11.
 
 Normalize only CPU-to-PPE skbs to queue zero after qdisc dequeue.  Doing
 this before descriptor construction keeps QDMA QID, BQL sent accounting
 and DMA completion accounting on the same netdev queue.
 
-Keep hardware TSO and SG enabled.  Every QDMA SG descriptor has its own
-FPORT, so route the complete descriptor chain to PPE0.  Publish each
-HNAT hardware-TSO skb at its own QDMA context-pointer boundary; this
-bounds the generated wire-packet burst without adding a per-segment MMIO
-write.  Non-HNAT and non-GSO traffic retains normal xmit_more batching.
+Hardware TSO captures show a second ordering boundary.  The individual
+segments within a GSO skb are almost always ordered, but complete 64 KiB
+TSO expansions overtake and interleave with other expansions after QDMA
+hands them to PPE/WED.  In three ten-second captures, 5.96% to 10.10% of
+unique TCP segments arrived behind the receive high-water mark and most
+client ACKs carried SACK.  The reordered blocks commonly contain exactly
+44 MSS-sized packets, matching one full GSO skb.
 
-Give the private CPU-to-PPE marker a name shared by HNAT and Ethernet
-instead of duplicating its numeric value.
+Keep hardware TSO and SG enabled, but allow only one CPU-to-PPE hardware
+TSO descriptor chain in flight.  Mark its final descriptor and release
+the gate from QDMA completion, after all source fragments have been
+consumed.  Stop queue zero while the gate is occupied and use the normal
+stop/recheck/wake pattern to avoid a missed completion wakeup.  Packets
+already behind a TSO chain wait as well, so a small TCP skb cannot cross
+the expansion.  UDP, non-HNAT and normal Ethernet traffic are unchanged.
+
+Every QDMA SG descriptor has its own FPORT, so route the complete
+descriptor chain to PPE0.  Publish every HNAT hardware-TSO skb at its own
+QDMA context-pointer boundary.  Name the private CPU-to-PPE marker shared
+by HNAT and Ethernet instead of duplicating its numeric value.
 
 Signed-off-by: Codex <codex@openai.com>
 ---
- drivers/net/ethernet/mediatek/mtk_eth_soc.c          | 40 ++++++++++++++++++---
- .../ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h         |  3 +-
- 2 files changed, 37 insertions(+), 6 deletions(-)
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c        | 109 +++++++++++++++++++--
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h        |   3 +
+ .../net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h  |   3 +-
+ 3 files changed, 107 insertions(+), 8 deletions(-)
 
 diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.c b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+index bbdf31d..fca6920 100644
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
-@@ -1855,6 +1855,7 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+@@ -1662,6 +1662,11 @@ static int txd_to_idx(struct mtk_tx_ring *ring, void *dma, u32 txd_size)
+ static void mtk_tx_unmap(struct mtk_eth *eth, struct mtk_tx_buf *tx_buf,
+ 			 struct xdp_frame_bulk *bq, bool napi)
+ {
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++	bool hnat_tso_last = tx_buf->flags & MTK_TX_FLAGS_HNAT_TSO_LAST;
++	u16 mac_id = tx_buf->mac_id;
++#endif
++
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA)) {
+ 		if (tx_buf->flags & MTK_TX_FLAGS_SINGLE0) {
+ 			dma_unmap_single(eth->dma_dev,
+@@ -1711,6 +1716,15 @@ static void mtk_tx_unmap(struct mtk_eth *eth, struct mtk_tx_buf *tx_buf,
+ 	}
+ 	tx_buf->flags = 0;
+ 	tx_buf->data = NULL;
++
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++	if (hnat_tso_last &&
++	    atomic_xchg(&eth->hnat_tso_pending, 0) &&
++	    napi && mac_id < MTK_MAX_DEVS && eth->netdev[mac_id] &&
++	    !test_bit(MTK_RESETTING, &eth->state) &&
++	    atomic_read(&eth->tx_ring.free_count) > eth->tx_ring.thresh)
++		netif_tx_wake_queue(netdev_get_tx_queue(eth->netdev[mac_id], 0));
++#endif
+ }
+ 
+ static void setup_tx_buf(struct mtk_eth *eth, struct mtk_tx_buf *tx_buf,
+@@ -1855,6 +1869,7 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
  	struct mtk_tx_dma *itxd_pdma, *txd_pdma;
  	struct mtk_tx_buf *itx_buf, *tx_buf;
  	int i, n_desc = 1;
@@ -46,7 +80,7 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.c b/drivers/net/ethernet/
  	int queue = skb_get_queue_mapping(skb);
  	int k = 0;
  
-@@ -1882,10 +1883,12 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+@@ -1882,10 +1897,12 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
  	/* TX SG offload */
  	txd = itxd;
  	txd_pdma = qdma_to_pdma(ring, txd);
@@ -63,7 +97,7 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.c b/drivers/net/ethernet/
  	}
  #endif
  
-@@ -1923,6 +1926,17 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+@@ -1923,6 +1940,17 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
  
  			mtk_tx_set_dma_desc(dev, txd, &txd_info);
  
@@ -81,7 +115,21 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.c b/drivers/net/ethernet/
  			tx_buf = mtk_desc_to_tx_buf(ring, txd,
  						    soc->tx.desc_size);
  			if (new_desc)
-@@ -1962,7 +1976,8 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+@@ -1943,6 +1971,13 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+ 	itx_buf->type = MTK_TYPE_SKB;
+ 	itx_buf->data = skb;
+ 
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++	if (hnat_to_ppe && gso && MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
++		tx_buf = mtk_desc_to_tx_buf(ring, txd, soc->tx.desc_size);
++		tx_buf->flags |= MTK_TX_FLAGS_HNAT_TSO_LAST;
++	}
++#endif
++
+ 	if (!MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
+ 		if (k & 0x1)
+ 			txd_pdma->txd2 |= TX_DMA_LS0;
+@@ -1962,7 +1997,8 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
  	wmb();
  
  	if (MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
@@ -91,10 +139,16 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.c b/drivers/net/ethernet/
  			mtk_w32(eth, txd->txd2, soc->reg_map->qdma.ctx_ptr);
  	} else {
  		int next_idx;
-@@ -2060,6 +2075,21 @@ static netdev_tx_t mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+@@ -2059,6 +2095,32 @@ static netdev_tx_t mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ 	struct sk_buff *segs, *next;
  	bool gso = false;
  	int tx_num;
- 
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++	bool hnat_to_ppe = false;
++	bool hnat_tcp = false;
++	bool hnat_tso = false;
++#endif
++
 +#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
 +	/* The local socket cached a queue for the WiFi netdev before HNAT
 +	 * redirected this skb to the Ethernet QDMA device.  That queue number
@@ -106,14 +160,103 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.c b/drivers/net/ethernet/
 +	 * through DMA completion, keeping descriptor QID and BQL accounting
 +	 * on the same queue.
 +	 */
-+	if (HNAT_SKB_CB2(skb)->magic == HNAT_TO_PPE_MAGIC)
++	if (HNAT_SKB_CB2(skb)->magic == HNAT_TO_PPE_MAGIC) {
++		hnat_to_ppe = true;
++		if (skb->protocol == htons(ETH_P_IP))
++			hnat_tcp = ip_hdr(skb)->protocol == IPPROTO_TCP;
++		else if (skb->protocol == htons(ETH_P_IPV6))
++			hnat_tcp = ipv6_hdr(skb)->nexthdr == IPPROTO_TCP;
 +		skb_set_queue_mapping(skb, 0);
++	}
 +#endif
-+
+ 
  	if (skb_vlan_tag_present(skb) &&
  	    !eth_proto_is_802_3(eth_hdr(skb)->h_proto)) {
- 		skb = __vlan_hwaccel_push_inside(skb);
+@@ -2112,12 +2174,44 @@ static netdev_tx_t mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ 		}
+ 	}
+ 
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++	/* QDMA can have several TSO expansions in flight at once.  That is
++	 * normally harmless for a MAC destination, but PPE/WED may dispatch
++	 * complete 64 KiB expansions independently and let a later expansion
++	 * overtake an earlier one.  Keep one CPU-to-PPE TSO chain in flight.
++	 * The final descriptor releases this gate from the QDMA completion
++	 * path, after every source fragment of the expansion is consumed.
++	 */
++	hnat_tcp |= gso;
++	hnat_tso = hnat_to_ppe && hnat_tcp && gso &&
++		   MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA);
++	if (hnat_to_ppe && hnat_tcp &&
++	    atomic_read(&eth->hnat_tso_pending)) {
++		struct netdev_queue *txq = netdev_get_tx_queue(dev, 0);
++
++		netif_tx_stop_queue(txq);
++		/* Avoid missing a completion between stop and recheck. */
++		smp_mb();
++		if (!atomic_read(&eth->hnat_tso_pending))
++			netif_tx_wake_queue(txq);
++		spin_unlock(&eth->page_lock);
++
++		return NETDEV_TX_BUSY;
++	}
++	if (hnat_tso)
++		atomic_set(&eth->hnat_tso_pending, 1);
++#endif
++
+ 	skb_list_walk_safe(skb, skb, next) {
+ 		if ((mtk_is_netsys_v1(eth) &&
+ 		     mtk_skb_has_small_frag(skb) && skb_linearize(skb)) ||
+ 		    mtk_tx_map(skb, dev, tx_num, ring, gso) < 0) {
+-				stats->tx_dropped++;
+-				dev_kfree_skb_any(skb);
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++			if (hnat_tso)
++				atomic_set(&eth->hnat_tso_pending, 0);
++#endif
++			stats->tx_dropped++;
++			dev_kfree_skb_any(skb);
+ 		}
+ 	}
+ 
+@@ -6492,6 +6586,7 @@ static int mtk_probe(struct platform_device *pdev)
+ 	spin_lock_init(&eth->rx_irq_lock);
+ 	spin_lock_init(&eth->dim_lock);
+ 	spin_lock_init(&eth->qdma_shaper.lock);
++	atomic_set(&eth->hnat_tso_pending, 0);
+ 
+ 	eth->rx_dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
+ 	INIT_WORK(&eth->rx_dim.work, mtk_dim_rx);
+diff --git a/drivers/net/ethernet/mediatek/mtk_eth_soc.h b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+index 69b0039..92ec75c 100644
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -941,6 +941,7 @@ enum mtk_tx_flags {
+ 	 */
+ 	MTK_TX_FLAGS_SINGLE0	= 0x01,
+ 	MTK_TX_FLAGS_PAGE0	= 0x02,
++	MTK_TX_FLAGS_HNAT_TSO_LAST = 0x04,
+ };
+ 
+ /* This enum allows us to identify how the clock is defined on the array of the
+@@ -1646,6 +1647,7 @@ struct mtk_soc_data {
+  * @mii_bus:		If there is a bus we need to create an instance for it
+  * @pending_work:	The workqueue used to reset the dma ring
+  * @state:		Initialization and runtime state of the device
++ * @hnat_tso_pending:	Serializes CPU-to-PPE hardware TSO descriptor chains
+  * @soc:		Holding specific data among vaious SoCs
+  */
+ 
+@@ -1688,6 +1690,7 @@ struct mtk_eth {
+ 	struct mii_bus			*mii_bus;
+ 	struct work_struct		pending_work;
+ 	unsigned long			state;
++	atomic_t			hnat_tso_pending;
+ 
+ 	const struct mtk_soc_data	*soc;
+ 
 diff --git a/drivers/net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h b/drivers/net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h
+index c5dbea1..06532dd 100644
 --- a/drivers/net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h
 +++ b/drivers/net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h
 @@ -91,9 +91,10 @@ struct hnat_desc {
