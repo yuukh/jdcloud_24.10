@@ -44,12 +44,17 @@ install_kernel_patch() {
 
 "$SCRIPT_DIR/scripts/port-mtwifi-7672.sh" "$PWD"
 
-# Keep every descriptor of a CPU-injected GSO/SG skb on PPE0.
-install_kernel_patch 9999-04-fix-cpu-wifi-hnat-qdma-sg-routing.patch
+# Remove superseded software-segmentation patches from incremental trees.
+rm -f "$PWD/target/linux/mediatek/patches-6.6/9999-04-fix-cpu-wifi-hnat-qdma-sg-routing.patch"
+rm -f "$PWD/target/linux/mediatek/patches-6.6/9999-05-fix-cpu-wifi-hnat-gso-ordering.patch"
 
-# Restore L2 first, segment local-to-WiFi GSO before QDMA hardware TSO,
-# and rebuild HNAT head/cb metadata on every wire-sized PPE/WED packet.
-install_kernel_patch 9999-05-fix-cpu-wifi-hnat-gso-ordering.patch
+# Normalize the cross-netdev QDMA QID, keep the whole SG chain on PPE0,
+# and publish each hardware-TSO skb at a bounded context-pointer boundary.
+install_kernel_patch 9999-04-fix-cpu-wifi-hnat-hardware-tso-routing.patch
+
+# Restore L2 and HNAT metadata while preserving the original GSO skb for
+# Ethernet QDMA hardware TSO into PPE/WED.
+install_kernel_patch 9999-05-enable-cpu-wifi-hnat-hardware-tso.patch
 
 # Keep PPE/FORCE_TO_CPU handling local to the current RX descriptor.
 install_kernel_patch 9999-06-fix-mtk-rx-sent-ppd-state-leak.patch

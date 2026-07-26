@@ -146,6 +146,15 @@ sha256sum /lib/firmware/WIFI_RAM_CODE_MT7986.bin
 `iwpriv` 应显示 `Driver version: 7.6.7.2`；`WIFI_RAM_CODE_MT7986.bin` 的 SHA-256 应为
 `5eb175d860cc6f148cfa894ec796f1c64bfd23295d3eb235642205b68e147dfc`。
 
+### CPU→WiFi HNAT hardware TSO
+
+本分支保留本机 TCP GSO skb，经过 eth0 qdisc 后由 MT7986 QDMA hardware TSO
+分段，再进入 PPE0→WED。HNAT reinjection 会在 Ethernet driver 建立 descriptor
+之前把跨设备遗留的 WiFi TX queue mapping 规范为 QDMA QID 0；同一个 TSO skb
+的所有 SG descriptor 使用相同 PPE0 FPORT，并在该 TSO skb 末尾独立发布 QDMA
+context pointer。普通 Ethernet、非 HNAT 和非 GSO 流量仍使用原有队列选择及
+`xmit_more` 批处理。
+
 ## 📁 项目文件说明
 
 ### 配置文件
