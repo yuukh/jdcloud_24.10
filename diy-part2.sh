@@ -51,6 +51,9 @@ install_kernel_patch 9999-04-fix-cpu-wifi-hnat-qdma-sg-routing.patch
 # and rebuild HNAT head/cb metadata on every wire-sized PPE/WED packet.
 install_kernel_patch 9999-05-fix-cpu-wifi-hnat-gso-ordering.patch
 
+# Keep PPE/FORCE_TO_CPU handling local to the current RX descriptor.
+install_kernel_patch 9999-06-fix-mtk-rx-sent-ppd-state-leak.patch
+
 # Keep both radios encrypted on a freshly generated MTK Wi-Fi configuration.
 apply_source_patch 110-mtwifi-secure-defaults.patch
 
