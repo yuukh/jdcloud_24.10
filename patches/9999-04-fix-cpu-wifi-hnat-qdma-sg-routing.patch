@@ -12,14 +12,10 @@ Remember the HNAT destination and apply it to every descriptor belonging
 to the skb.  This preserves TSO/GSO and SG while keeping the complete
 packet on the PPE0 path.
 
-Also make sent_ppd packet-local in mtk_poll_rx().  Its old poll-local
-lifetime caused every packet following a PPE/FORCE_TO_CPU packet in the
-same NAPI poll to inherit the PPD device, protocol and mark.
-
 Signed-off-by: Codex <codex@openai.com>
 ---
- drivers/net/ethernet/mediatek/mtk_eth_soc.c | 22 ++++++++++++++++++----
- 1 file changed, 18 insertions(+), 4 deletions(-)
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
 
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
@@ -65,21 +61,5 @@ Signed-off-by: Codex <codex@openai.com>
  			tx_buf = mtk_desc_to_tx_buf(ring, txd,
  						    soc->tx.desc_size);
  			if (new_desc)
-@@ -2470,7 +2484,6 @@ static int mtk_poll_rx(struct napi_struc
- 	int done = 0, bytes = 0;
- 	dma_addr_t dma_addr = DMA_MAPPING_ERROR;
- 	int ppe_idx = 0;
--	int sent_ppd = 0;
- 
- 	if (unlikely(!ring))
- 		goto rx_done;
-@@ -2480,6 +2493,7 @@ static int mtk_poll_rx(struct napi_struc
- 		struct net_device *netdev;
- 		u32 hash, reason;
- 		int mac = 0;
-+		bool sent_ppd = false;
- 
- 		idx = NEXT_DESP_IDX(ring->calc_idx, ring->dma_size);
- 		rxd = ring->dma + idx * eth->soc->rx.desc_size;
 -- 
 2.45.0

@@ -6,9 +6,10 @@ Local TCP output reaches do_hnat_cpu_to_ge() as non-linear GSO skbs,
 normally with 44 wire segments.  Client-side captures show sequence holes
 of 44 MSS and multiples thereof once more than one such skb is in flight.
 The packets inside either batch have valid TCP checksums and monotonically
-increasing IP IDs, but complete batches are interleaved after QDMA hardware
-TSO feeds PPE/WED.  The same path is almost clean at 10 Mbit/s, where GSO
-batches do not overlap, and UDP datagrams do not exhibit the failure.
+increasing IP IDs, but complete batches are interleaved after crossing the
+QDMA hardware-TSO to PPE/WED boundary.  The same path is almost clean at
+10 Mbit/s, where GSO batches do not overlap, and UDP datagrams do not
+exhibit the failure.
 
 Force complete software segmentation only on the CPU-to-WiFi PPE
 reinjection path.  Keep SG and checksum offload enabled for the resulting
@@ -35,8 +36,8 @@ header and control block have already been used as GSO workspace.
 
 Signed-off-by: Codex <codex@openai.com>
 ---
- drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c | 115 ++++++++++++++++---
- 1 file changed, 89 insertions(+), 26 deletions(-)
+ drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c | 112 ++++++++++++++++---
+ 1 file changed, 86 insertions(+), 28 deletions(-)
 
 diff --git a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
 --- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
@@ -49,7 +50,7 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/drivers/net
  #include "nf_hnat_mtk.h"
  #include "hnat.h"
  
-@@ -1001,44 +1002,106 @@
+@@ -1001,44 +1002,101 @@
  	return 0;
  }
  
@@ -73,9 +74,7 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/drivers/net
 +	}
 +
 +	memset(skb_hnat_info(skb), 0, FOE_INFO_LEN);
-+	skb_hnat_alg(skb) = 0;
 +	skb_hnat_magic_tag(skb) = HNAT_MAGIC_TAG;
-+	skb_hnat_filled(skb) = 0;
 +	set_to_ppe(skb);
 +
 +	/* Set where the reinjected packet came from. */
@@ -104,9 +103,9 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/drivers/net
 +		return -1;
 +
 +	memset(skb_hnat_info(skb), 0, FOE_INFO_LEN);
- 	skb_hnat_alg(skb) = 0;
+-	skb_hnat_alg(skb) = 0;
  	skb_hnat_magic_tag(skb) = HNAT_MAGIC_TAG;
- 	skb_hnat_filled(skb) = 0;
+-	skb_hnat_filled(skb) = 0;
  
  	if (unlikely(!is_ppe_support_type(skb))) {
  		skb_hnat_alg(skb) = 1;
@@ -150,11 +149,10 @@ diff --git a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c b/drivers/net
 +		return 0;
 +	}
 +
-+	/* QDMA/PPE/WED can reorder consecutive hardware-TSO batches.  Produce
-+	 * wire-sized skbs here while retaining SG and checksum offload.  GSO
-+	 * uses skb->cb[32..47] and allocates fresh skb heads, so the transmit
-+	 * helper deliberately restores both MediaTek metadata areas after
-+	 * segmentation.
++	/* Avoid carrying a multi-segment hardware-TSO batch across the
++	 * QDMA-to-PPE/WED boundary.  Keep SG and checksum offload for each
++	 * wire-sized skb.  GSO uses skb->cb[32..47] and allocates fresh skb
++	 * heads, so restore both MediaTek metadata areas after segmentation.
 +	 */
 +	features = hnat_priv->g_ppdev->features & ~NETIF_F_GSO_MASK;
 +	segs = skb_gso_segment(skb, features);

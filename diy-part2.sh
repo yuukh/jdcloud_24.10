@@ -44,9 +44,8 @@ install_kernel_patch() {
 
 "$SCRIPT_DIR/scripts/port-mtwifi-7672.sh" "$PWD"
 
-# Keep every descriptor of a CPU-injected GSO/SG skb on PPE0 and do not
-# leak PPE/FORCE_TO_CPU state to later packets in the same RX poll.
-install_kernel_patch 9999-04-fix-cpu-wifi-hnat-qdma-and-ppd.patch
+# Keep every descriptor of a CPU-injected GSO/SG skb on PPE0.
+install_kernel_patch 9999-04-fix-cpu-wifi-hnat-qdma-sg-routing.patch
 
 # Restore L2 first, segment local-to-WiFi GSO before QDMA hardware TSO,
 # and rebuild HNAT head/cb metadata on every wire-sized PPE/WED packet.
