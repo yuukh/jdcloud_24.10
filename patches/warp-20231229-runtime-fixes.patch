@@ -1,0 +1,410 @@
+--- a/mcu/warp_ccif.c
++++ b/mcu/warp_ccif.c
+@@ -65,5 +65,7 @@
+ 	struct device_node *node = NULL;
+ 	struct ccif_entry *ccif = NULL;
+-	warp_os_alloc_mem((unsigned char **)&ccif, sizeof(struct ccif_entry), GFP_ATOMIC);
++	int ret;
++
++	warp_os_alloc_mem((unsigned char **)&ccif, sizeof(struct ccif_entry), GFP_KERNEL);
+ 
+ 	if (ccif == NULL) {
+@@ -82,8 +84,15 @@
+ 	}
+ 
+-	ccif->base_addr = (unsigned long)of_iomap(node, idx);
++	ccif->base_addr = of_iomap(node, idx);
+ 	ccif->irq = irq_of_parse_and_map(node, idx);
++	of_node_put(node);
++	node = NULL;
++
++	if (!ccif->base_addr || !ccif->irq) {
++		warp_dbg(WARP_DBG_ERR, "%s(): map CCIF resources failed\n", __func__);
++		goto err;
++	}
+ 
+-	warp_dbg(WARP_DBG_INF, "%s(): ccif: %p, addr: %lx, irq:%d!\n",
++	warp_dbg(WARP_DBG_INF, "%s(): ccif: %p, addr: %p, irq:%u!\n",
+ 		__func__, ccif, ccif->base_addr, ccif->irq);
+ 
+@@ -92,8 +101,10 @@
+ 	warp_ccif_rx_ring_get_hw(ccif, bus_to_rx_ring(bus));
+ 	/*assign interrupt*/
+-	if (request_irq(ccif->irq, (irq_handler_t)isr,
+-		trig_flag, "ccif_wo_isr", bus)) {
+-		warp_dbg(WARP_DBG_ERR, "%s(): register irq: %d for ccif fail!\n",
+-			 __func__, ccif->irq);
++	ret = request_irq(ccif->irq, (irq_handler_t)isr,
++			  trig_flag, "ccif_wo_isr", bus);
++	if (ret) {
++		warp_dbg(WARP_DBG_ERR, "%s(): register irq %u failed: %d\n",
++			 __func__, ccif->irq, ret);
++		goto err;
+ 	}
+ 
+@@ -103,5 +114,10 @@
+ 	return 0;
+ err:
++	of_node_put(node);
+ 	if (ccif) {
++		if (ccif->base_addr)
++			iounmap(ccif->base_addr);
++		if (ccif->irq)
++			irq_dispose_mapping(ccif->irq);
+ 		warp_os_free_mem(ccif);
+ 		bus->hw = NULL;
+@@ -152,4 +168,6 @@
+ 		if (ccif->base_addr)
+ 			iounmap(ccif->base_addr);
++		if (ccif->irq)
++			irq_dispose_mapping(ccif->irq);
+ 		warp_os_free_mem(ccif);
+ 	}
+--- a/mcu/warp_ccif.h
++++ b/mcu/warp_ccif.h
+@@ -29,6 +29,6 @@
+ 
+ struct ccif_entry {
+-	unsigned long base_addr;
+-	u8 irq;
++	void __iomem *base_addr;
++	unsigned int irq;
+ 	struct ccif_ring_ctrl *tx_ring;
+ 	struct ccif_ring_ctrl *rx_ring;
+--- a/mcu/warp_fwdl.c
++++ b/mcu/warp_fwdl.c
+@@ -24,5 +24,5 @@
+ 
+ struct fw_dl_buf {
+-	u8 *img_ptr;
++	const u8 *img_ptr;
+ 	u32 img_dest_addr;
+ 	u32 img_size;
+@@ -38,5 +38,5 @@
+ EXPORT_SYMBOL(wo_host_exist);
+ 
+-static void img_get_8bit(u8 *dest, u8 **src, u32 cnt)
++static void img_get_8bit(u8 *dest, const u8 **src, u32 cnt)
+ {
+ 	u32 i;
+@@ -49,5 +49,5 @@
+ }
+ 
+-static void img_get_32bit(u32 *dest, u8 **src, u32 cnt)
++static void img_get_32bit(u32 *dest, const u8 **src, u32 cnt)
+ {
+ 	u32 i;
+@@ -215,6 +215,6 @@
+ static int warp_fwdl_mcu_mode(struct warp_fwdl_ctrl *ctrl, struct wed_entry *wed, u8 wed_idx)
+ {
+-	u8 *img_ptr = NULL, fw_info_str[50] = {0};
+-	u8 *img_ptr_tail = NULL;
++	const u8 *img_ptr = NULL, *img_ptr_tail = NULL;
++	u8 fw_info_str[50] = {0};
+ 	struct fw_info_t *fw_info = &ctrl->fw_info;
+ 	u32 num_of_region = 0, i, offset = 0;
+--- a/mcu/warp_fwdl.h
++++ b/mcu/warp_fwdl.h
+@@ -54,5 +54,5 @@
+ 	struct wo_fwdl_host_mode_ctrl **wo_host_exist;
+ 	const struct firmware *fw_entry;
+-	u8 *bin_ptr;
++	const u8 *bin_ptr;
+ 	u32 bin_size;
+ 	u8 bin_mode;
+--- a/mcu/warp_wo.c
++++ b/mcu/warp_wo.c
+@@ -467,5 +467,6 @@
+ 			}
+ 			} else {
+-				warp_dbg(WARP_DBG_ERR, "wriong ddone bit 0x%x: %d ", cidx, (rxd->ctrl & WED_CTL_DMA_DONE));
++				warp_dbg(WARP_DBG_ERR, "wrong ddone bit 0x%x: %lx ",
++					 cidx, rxd->ctrl & WED_CTL_DMA_DONE);
+ 			}
+ 		}
+--- a/mcu/warp_woctrl.c
++++ b/mcu/warp_woctrl.c
+@@ -225,5 +225,5 @@
+ }
+ 
+-static int warp_woctrl_reset_wocpu(struct warp_entry *warp)
++static int __maybe_unused warp_woctrl_reset_wocpu(struct warp_entry *warp)
+ {
+ 	int ret;
+--- a/regs/reg_v2/warp_hw_v2.c
++++ b/regs/reg_v2/warp_hw_v2.c
+@@ -3049,5 +3049,5 @@
+ 		if (ret < 0) {
+ 			warp_dbg(WARP_DBG_ERR, "%s(): wed_tx reset check fail,ret=%d\n", __func__, ret);
+-			warp_dbg(WARP_DBG_ERR, "%s(): check ser_busy_cnt: echo 18 > wed\n", __func__, ret);
++			warp_dbg(WARP_DBG_ERR, "%s(): check ser_busy_cnt: echo 18 > wed\n", __func__);
+ 		}
+ 		/* TX free done reset - rx path */
+@@ -3056,5 +3056,5 @@
+ 		if (ret < 0) {
+ 			warp_dbg(WARP_DBG_ERR, "%s(): wed_rx reset check fail,ret=%d\n", __func__, ret);
+-			warp_dbg(WARP_DBG_ERR, "%s(): check ser_busy_cnt: echo 18 > wed\n", __func__, ret);
++			warp_dbg(WARP_DBG_ERR, "%s(): check ser_busy_cnt: echo 18 > wed\n", __func__);
+ 		}
+ 
+@@ -3065,5 +3065,5 @@
+ 		if (ret < 0) {
+ 			warp_dbg(WARP_DBG_ERR, "%s(): wed_rx_data check fail,ret=%d\n", __func__, ret);
+-			warp_dbg(WARP_DBG_ERR, "%s(): check ser_busy_cnt: echo 18 > wed\n", __func__, ret);
++			warp_dbg(WARP_DBG_ERR, "%s(): check ser_busy_cnt: echo 18 > wed\n", __func__);
+ 		}
+ #endif
+--- a/warp_bm_v2.c
++++ b/warp_bm_v2.c
+@@ -89,17 +89,4 @@
+ *
+ */
+-static void
+-grp_buf_exit(
+-	struct wed_entry *wed,
+-	struct wed_buf_res *res,
+-	u32 start,
+-	u32 size)
+-
+-{
+-}
+-
+-/*
+-*
+-*/
+ static int
+ grp_buf_init(
+@@ -668,5 +655,4 @@
+ 		warp_dbg(WARP_DBG_INF, "%s(): buf_low chage to %d!, disable interrupt\n", __func__, value);
+ 	}
+-done:
+ 	if (res->dybm_stat.off_low_buf_int == true)
+ 		dybm_eint_ctrl(wed, false, WARP_DYBM_EINT_BM_L);
+@@ -1162,7 +1148,4 @@
+ 	struct warp_dma_buf *desc)
+ {
+-	struct wed_res_ctrl *res_ctrl = &wed->res_ctrl;
+-	struct wed_rx_ctrl *rx_ctrl = &res_ctrl->rx_ctrl;
+-	struct wed_rx_bm_res *extra_res = &rx_ctrl->extra;
+ 	u32 i;
+ 
+@@ -1217,5 +1200,6 @@
+ 					desc->alloc_size, DMA_TO_DEVICE);
+ 	if (dma_mapping_error(&wed->pdev->dev, desc->alloc_pa)) {
+-		warp_dbg(WARP_DBG_ERR, "%s(): FATAL, DMA map ERROR, %ld\n", __func__, desc->alloc_va);
++		warp_dbg(WARP_DBG_ERR, "%s(): FATAL, DMA map ERROR, %p\n",
++			 __func__, desc->alloc_va);
+ 		warp_os_free_mem(res->desc[idx].alloc_va);
+ 		ret = -1;
+@@ -1914,3 +1898,2 @@
+ 	return ret;
+ }
+-
+--- a/warp_main.c
++++ b/warp_main.c
+@@ -439,9 +439,9 @@
+ 		warp_dbg(WARP_DBG_ERR, "%s()wo heartbeat: 0x%x!\n", __func__, heart_beat);
+ 		/* dump WO PC LR log for 2 times*/
+-		warp_dbg(WARP_DBG_ERR, "%s()======WO PC LR dump======\n", __func__, heart_beat);
++		warp_dbg(WARP_DBG_ERR, "%s()======WO PC LR dump======\n", __func__);
+ 		for (i = 0; i < 2; i++) {
+ 			warp_wo_pc_lr_cr_dump(warp->idx);
+ 		}
+-		warp_dbg(WARP_DBG_ERR, "%s()======WO PC LR dump======\n", __func__, heart_beat);
++		warp_dbg(WARP_DBG_ERR, "%s()======WO PC LR dump======\n", __func__);
+ 	}
+ #endif
+@@ -1230,6 +1230,4 @@
+ 
+ 	wed = &warp->wed;
+-	struct wifi_entry *wifi = &warp->wifi;
+-	struct wifi_hw *hw = &wifi->hw;
+ 
+ 	warp_eint_ctrl_hw(wed, false);
+@@ -1509,3 +1507,2 @@
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION(DRIVER_DESC);
+-
+--- a/warp_wifi.c
++++ b/warp_wifi.c
+@@ -86,8 +86,4 @@
+ #endif /*CONFIG_WARP_DBG_SUPPORT*/
+ 
+-#define FOE_MAGIC_WED0 0x78
+-#define FOE_MAGIC_WED1 0x79
+-#define FOE_MAGIC_WED2 0x87
+-
+ void
+ wifi_rx_tuple_add(struct wifi_entry *wifi, u8 idx, unsigned char *rx_info)
+--- a/wed.c
++++ b/wed.c
+@@ -565,26 +565,5 @@
+ 	u32 token_id)
+ {
+-	int ret = -1;
+-	struct warp_entry *warp = NULL;
+-	struct wifi_entry *wifi = NULL;
+-	struct wifi_ops *ops = NULL;
+-
+-	if (wed) {
+-		warp = (struct warp_entry *)wed->warp;
+-#if 0
+-		if (warp) {
+-			wifi = &warp->wifi;
+-			ops = wifi->ops;
+-
+-			if (ops && ops->token_rx_dmad_deinit)
+-				ret = ops->token_rx_dmad_deinit(wifi->hw.priv,
+-												token_id);
+-		}
+-#endif
+-		ret = 0;
+-	}
+-
+-err:
+-	return ret;
++	return wed ? 0 : -1;
+ }
+ #endif	/* WED_RX_D_SUPPORT */
+@@ -915,5 +894,5 @@
+ 	case WED_PROC_TX_DYNAMIC_FREE: {
+ 		if(IS_WED_HW_CAP(wed, WED_HW_CAP_DYN_TXBM))
+-			buf_free_task((unsigned long)wed);
++			buf_free_task(wed);
+ 		else
+ 			warp_dbg(WARP_DBG_ERR, "DYBM is not enabled!\n");
+@@ -1183,3 +1162,2 @@
+ 	}
+ }
+-
+--- a/warp_proc.c
++++ b/warp_proc.c
+@@ -76,36 +76,4 @@
+ }
+ 
+-/**
+- * strtok - Split a string into tokens
+- * @s: The string to be searched
+- * @ct: The characters to search for
+- * * WARNING: strtok is deprecated, use strsep instead. However strsep is not compatible with old architecture.
+- */
+-char *__strtok;
+-char *strtok(char *s, const char *ct)
+-{
+-	char *sbegin, *send;
+-
+-	sbegin = (s) ? s : __strtok;
+-
+-	if (!sbegin)
+-		return NULL;
+-
+-	sbegin += strspn(sbegin, ct);
+-
+-	if (*sbegin == '\0') {
+-		__strtok = NULL;
+-		return NULL;
+-	}
+-
+-	send = strpbrk(sbegin, ct);
+-
+-	if (send && *send != '\0')
+-		*send++ = '\0';
+-
+-	__strtok = send;
+-	return sbegin;
+-}
+-
+ /*
+ *
+@@ -1046,5 +1014,6 @@
+ wo_proc_write(struct file *file, const char __user *usr_buff, size_t len1, loff_t *ppos)
+ {
+-	u8 *buffer = NULL, *type = NULL, *sub_str = NULL, *input[11] = {0};
++	char *buffer = NULL, *cursor, *type = NULL, *sub_str = NULL;
++	char *input[11] = {0};
+ 	struct warp_entry *warp = (struct warp_entry *)PDE_DATA(file_inode(file));
+ 	int input_idx = 0, input_total = 0;
+@@ -1068,8 +1037,14 @@
+ 			warp_dbg(WARP_DBG_INF, "(%s) buffer = %s\n", __func__, buffer);
+ 
+-			for (sub_str = strtok(buffer, " "); sub_str && input_idx < 11; sub_str = strtok(NULL, " "), input_idx++, input_total++) {
++			cursor = buffer;
++			while (input_idx < ARRAY_SIZE(input) &&
++			       (sub_str = strsep(&cursor, " ")) != NULL) {
++				if (!*sub_str)
++					continue;
+ 				input[input_idx] = sub_str;
+ 				warp_dbg(WARP_DBG_INF, "(%s) arg[%d] = %s(%d)\n", __func__, input_idx, input[input_idx], (u32)strlen(input[input_idx]));
++				input_idx++;
+ 			}
++			input_total = input_idx;
+ 
+ 			warp_dbg(WARP_DBG_INF, "(%s) argc=%d\n", __func__, input_total);
+@@ -1078,25 +1053,25 @@
+ 			if (input_total == 1 && type) {
+ 				cmd.msg_len = 0;
+-				if (strncmp(type, "bainfo", strlen(type)) == 0) {
++				if (strcmp(type, "bainfo") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_BA_INFO_DUMP;
+-				} else if (strncmp(type, "bactrl", strlen(type)) == 0) {
++				} else if (strcmp(type, "bactrl") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_BA_CTRL_DUMP;
+-				} else if (strncmp(type, "fbcmdq", strlen(type)) == 0) {
++				} else if (strcmp(type, "fbcmdq") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_FBCMD_Q_DUMP;
+-				} else if (strncmp(type, "logflush", strlen(type)) == 0) {
++				} else if (strcmp(type, "logflush") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_LOG_FLUSH;
+-				} else if (strncmp(type, "cpustat.dump", strlen(type)) == 0) {
++				} else if (strcmp(type, "cpustat.dump") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_CPU_STATS_DUMP;
+-				} else if (strncmp(type, "state", strlen(type)) == 0) {
++				} else if (strcmp(type, "state") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_WED_RX_STAT;
+-				} else if (strncmp(type, "ccif_ring", strlen(type)) == 0) {
++				} else if (strcmp(type, "ccif_ring") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_CCIF_RING_DUMP;
+-				} else if (strncmp(type, "prof_hit_dump", strlen(type)) == 0) {
++				} else if (strcmp(type, "prof_hit_dump") == 0) {
+ 					wo_profiling_report();
+ 					ret = 0;
+ 					goto error;
+-				} else if (strncmp(type, "rxcnt_info", strlen(type)) == 0) {
++				} else if (strcmp(type, "rxcnt_info") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_RXCNT_INFO;
+-				} else if (strncmp(type, "pclrdump", strlen(type)) == 0) {
++				} else if (strcmp(type, "pclrdump") == 0) {
+ 					warp_wo_pc_lr_cr_dump(warp->idx);
+ 					ret = 0;
+@@ -1121,17 +1096,17 @@
+ 				}
+ 
+-				if (strncmp(type, "devinfo", strlen(type)) == 0) {
++				if (strcmp(type, "devinfo") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_DEV_INFO_DUMP;
+-				} else if (strncmp(type, "bssinfo", strlen(type)) == 0) {
++				} else if (strcmp(type, "bssinfo") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_BSS_INFO_DUMP;
+-				} else if (strncmp(type, "starec", strlen(type)) == 0) {
++				} else if (strcmp(type, "starec") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_STA_REC_DUMP;
+-				} else if (strncmp(type, "starec_ba", strlen(type)) == 0) {
++				} else if (strcmp(type, "starec_ba") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_STA_BA_DUMP;
+-				} else if (strncmp(type, "logctrl", strlen(type)) == 0) {
++				} else if (strcmp(type, "logctrl") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_FW_LOG_CTRL;
+-				} else if (strncmp(type, "cpustat.en", strlen(type)) == 0) {
++				} else if (strcmp(type, "cpustat.en") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_CPU_STATS_ENABLE;
+-				} else if (strncmp(type, "prof_conf", strlen(type)) == 0) {
++				} else if (strcmp(type, "prof_conf") == 0) {
+ 					if (strstr(input[1], ",")) {
+ 						//TBD
+@@ -1141,5 +1116,5 @@
+ 						cmd.param.cmd_id = WO_CMD_PROF_CTRL;
+ 					}
+-				} else if (strncmp(type, "rxcnt_ctrl", strlen(type)) == 0) {
++				} else if (strcmp(type, "rxcnt_ctrl") == 0) {
+ 					cmd.param.cmd_id = WO_CMD_RXCNT_CTRL;
+ 				} else {

@@ -1,20 +1,51 @@
 diff --git a/base/include/osal.h b/base/include/osal.h
 --- a/base/include/osal.h	2023-12-29 05:52:41.000000000 +0000
 +++ b/base/include/osal.h	2026-07-20 13:04:40.613966280 +0000
-@@ -244,6 +244,13 @@
+@@ -244,6 +244,11 @@
  	unsigned long usec;
  };
  
-+typedef long __kernel_time_t;
-+
-+struct timeval {
-+	__kernel_time_t		tv_sec;		/* seconds */
-+	__kernel_suseconds_t	tv_usec;	/* microseconds */
++struct osal_timeval {
++	s64 tv_sec;
++	long tv_usec;
 +};
 +
  struct osal_op_history {
  	struct ring ring_buffer;
  	struct osal_op_history_entry *queue;
+@@ -369,1 +374,1 @@
+-int osal_gettimeofday2(struct timeval *tv);
++int osal_gettimeofday2(struct osal_timeval *tv);
+diff --git a/base/osal.c b/base/osal.c
+--- a/base/osal.c	2023-12-29 05:52:41.000000000 +0000
++++ b/base/osal.c	2026-07-29 00:00:00.000000000 +0000
+@@ -1196,7 +1196,7 @@
+ 	return 0;
+ }
+ 
+-int osal_gettimeofday2(struct timeval *tv)
++int osal_gettimeofday2(struct osal_timeval *tv)
+ {
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
+ 	struct timeval now;
+@@ -1207,1 +1207,1 @@
+-	ktime_get_real_ts64(&now);
++	ktime_get_ts64(&now);
+diff --git a/core/conninfra_core.c b/core/conninfra_core.c
+--- a/core/conninfra_core.c	2023-12-29 05:52:41.000000000 +0000
++++ b/core/conninfra_core.c	2026-07-29 00:00:00.000000000 +0000
+@@ -140,7 +140,7 @@
+ 	return 0;
+ }
+ 
+-static unsigned long timeval_to_ms(struct timeval *begin, struct timeval *end)
++static unsigned long timeval_to_ms(struct osal_timeval *begin, struct osal_timeval *end)
+ {
+ 	unsigned long time_diff = 0;
+ 
+@@ -355,1 +355,1 @@
+-	struct timeval pre_begin, pre_end, reset_end, done_end;
++	struct osal_timeval pre_begin, pre_end, reset_end, done_end;
 diff --git a/platform/consys_hw.c b/platform/consys_hw.c
 --- a/platform/consys_hw.c	2023-12-29 05:52:41.000000000 +0000
 +++ b/platform/consys_hw.c	2026-07-20 13:04:40.617299486 +0000
@@ -30,25 +61,23 @@ diff --git a/platform/consys_hw.c b/platform/consys_hw.c
  int mtk_conninfra_probe(struct platform_device *pdev)
  {
  	int ret = -1;
-+	struct clk *mcu_clk, *ap_conn_clk;
++	struct clk *clk;
  
  	if (pdev)
  		g_pdev = pdev;
-@@ -532,6 +534,18 @@
+@@ -532,6 +534,16 @@
  		return -2;
  	}
  
-+	mcu_clk = devm_clk_get(&pdev->dev, "mcu");
-+	if (IS_ERR(mcu_clk))
-+		pr_err("mcu clock not found\n");
-+	else if (clk_prepare_enable(mcu_clk))
-+		pr_err("mcu clock configuration failed\n");
++	clk = devm_clk_get_enabled(&pdev->dev, "mcu");
++	if (IS_ERR(clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(clk),
++				     "failed to enable mcu clock\n");
 +
-+	ap_conn_clk = devm_clk_get(&pdev->dev, "ap2conn");
-+	if (IS_ERR(ap_conn_clk))
-+		pr_err("ap2conn clock not found\n");
-+	else if (clk_prepare_enable(ap_conn_clk))
-+		pr_err("ap2conn clock configuration failed\n");
++	clk = devm_clk_get_enabled(&pdev->dev, "ap2conn");
++	if (IS_ERR(clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(clk),
++				     "failed to enable ap2conn clock\n");
 +
  	if (consys_hw_ops == NULL)
  		consys_hw_ops = (const struct consys_hw_ops_struct*)g_conninfra_plat_data->hw_ops;
@@ -58,6 +87,27 @@ diff --git a/platform/consys_hw.c b/platform/consys_hw.c
  	return 0;
  }
 -
+diff --git a/platform/mt7986/mt7986_consys_reg.c b/platform/mt7986/mt7986_consys_reg.c
+--- a/platform/mt7986/mt7986_consys_reg.c	2023-12-29 05:52:41.000000000 +0000
++++ b/platform/mt7986/mt7986_consys_reg.c	2026-07-29 00:00:00.000000000 +0000
+@@ -130,7 +130,7 @@
+ 			base_addr->vir_addr = (unsigned long)of_iomap(node, i);
+ 			of_get_address(node, i, &(base_addr->size), &flag);
+ #if 0
+-			pr_info("Get Index(%d-%s) phy_addr(0x%zx) vir_addr=(0x%zx) size=(0x%zx)\n",
++			pr_info("Get Index(%d-%s) phy_addr(0x%lx) vir_addr=(0x%lx) size=(0x%llx)\n",
+ 					i, consys_base_addr_index_to_str[i], base_addr->phy_addr,
+ 					base_addr->vir_addr, base_addr->size);
+ #endif
+@@ -141,7 +141,7 @@
+ 			if (base_addr->vir_addr == 0)
+ 				base_addr->vir_addr = (unsigned long)ioremap(base_addr->phy_addr, base_addr->size);
+ 
+-			pr_info("Get Index(%d-%s) phy_addr(0x%zx) vir_addr=(0x%zx) size=(0x%zx)\n",
++			pr_info("Get Index(%d-%s) phy_addr(0x%lx) vir_addr=(0x%lx) size=(0x%llx)\n",
+ 					i, consys_base_addr_index_to_str[i], base_addr->phy_addr,
+ 					base_addr->vir_addr, base_addr->size);
+ 		}
 diff --git a/platform/consys_reg_mng.c b/platform/consys_reg_mng.c
 --- a/platform/consys_reg_mng.c	2023-12-29 05:52:41.000000000 +0000
 +++ b/platform/consys_reg_mng.c	2026-07-20 13:04:40.617299486 +0000

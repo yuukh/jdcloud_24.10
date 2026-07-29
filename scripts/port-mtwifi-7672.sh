@@ -27,6 +27,7 @@ for required in \
 	"$TOPDIR/rules.mk" \
 	"$TOPDIR/target/linux/mediatek/Makefile" \
 	"$TOPDIR/package/mtk/applications/datconf/Makefile" \
+	"$TOPDIR/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh" \
 	"$TOPDIR/package/mtk/drivers/mt_wifi/Makefile" \
 	"$TOPDIR/package/mtk/drivers/warp/Makefile" \
 	"$TOPDIR/package/mtk/drivers/conninfra/Makefile"; do
@@ -47,12 +48,15 @@ grep -Fqx 'PKG_SOURCE:=$(PKG_NAME)-$(PKG_REVISION).tar.bz2' \
 for required_patch in \
 	mtwifi-7.6.7.2-linux-6.6.patch \
 	warp-20231229-linux-6.6.patch \
+	warp-20231229-runtime-fixes.patch \
 	conninfra-20231229-linux-6.6.patch \
-	iwinfo-mtwifi-v7672.patch; do
+	iwinfo-mtwifi-v7672.patch \
+	110-mtwifi-secure-defaults.patch; do
 	[ -f "$ASSET_DIR/patches/$required_patch" ] || die "缺少补丁 patches/$required_patch"
 done
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mtwifi-7672.XXXXXX")"
+mkdir -p "$TOPDIR/tmp"
+WORK_DIR="$(mktemp -d "$TOPDIR/tmp/mtwifi-7672.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 fetch_checked() {
@@ -120,9 +124,12 @@ ensure_config() {
 apply_openwrt_patch() {
 	local patch_file="$1"
 
-	if patch -s --batch --forward --dry-run -d "$TOPDIR" -p1 < "$patch_file" >/dev/null 2>&1; then
-		patch -s --batch --forward -d "$TOPDIR" -p1 < "$patch_file"
-	elif patch -s --batch --reverse --dry-run -d "$TOPDIR" -p1 < "$patch_file" >/dev/null 2>&1; then
+	if patch -s --batch --forward --no-backup-if-mismatch --dry-run \
+		-d "$TOPDIR" -p1 < "$patch_file" >/dev/null 2>&1; then
+		patch -s --batch --forward --no-backup-if-mismatch \
+			-d "$TOPDIR" -p1 < "$patch_file"
+	elif patch -s --batch --reverse --no-backup-if-mismatch --dry-run \
+		-d "$TOPDIR" -p1 < "$patch_file" >/dev/null 2>&1; then
 		echo "补丁已应用: $(basename -- "$patch_file")"
 	else
 		die "补丁无法应用: $patch_file"
@@ -143,14 +150,42 @@ tar -xJf "$TOPDIR/dl/$CONNINFRA_ARCHIVE" -C "$WORK_DIR/conninfra"
 [ -f "$WORK_DIR/warp/warp/Makefile" ] || die "WARP 压缩包目录结构异常"
 [ -f "$WORK_DIR/conninfra/conninfra/Makefile" ] || die "conninfra 压缩包目录结构异常"
 
-patch -s --batch --forward -d "$WORK_DIR/mtwifi" -p1 < "$ASSET_DIR/patches/mtwifi-7.6.7.2-linux-6.6.patch"
-patch -s --batch --forward -d "$WORK_DIR/warp/warp" -p1 < "$ASSET_DIR/patches/warp-20231229-linux-6.6.patch"
-patch -s --batch --forward -d "$WORK_DIR/conninfra/conninfra" -p1 < "$ASSET_DIR/patches/conninfra-20231229-linux-6.6.patch"
+patch -s --batch --forward --no-backup-if-mismatch \
+	-d "$WORK_DIR/mtwifi" -p1 < "$ASSET_DIR/patches/mtwifi-7.6.7.2-linux-6.6.patch"
+patch -s --batch --forward --no-backup-if-mismatch \
+	-d "$WORK_DIR/warp/warp" -p1 < "$ASSET_DIR/patches/warp-20231229-linux-6.6.patch"
+patch -s --batch --forward --no-backup-if-mismatch \
+	-d "$WORK_DIR/warp/warp" -p1 < "$ASSET_DIR/patches/warp-20231229-runtime-fixes.patch"
+patch -s --batch --forward --no-backup-if-mismatch \
+	-d "$WORK_DIR/conninfra/conninfra" -p1 < "$ASSET_DIR/patches/conninfra-20231229-linux-6.6.patch"
+
+WARP_PROC="$WORK_DIR/warp/warp/warp_proc.c"
+[ "$(grep -c '^static const struct proc_ops proc_' "$WARP_PROC")" -eq 13 ] || \
+	die "WARP proc_ops 移植不完整"
+! grep -q '^static const struct file_operations proc_' "$WARP_PROC" || \
+	die "WARP 仍包含旧式 proc file_operations"
+grep -Fq 'warp_proc_copy_from_user(char *dst, size_t dst_size,' "$WARP_PROC" || \
+	die "WARP proc 输入边界检查未应用"
+grep -Fq 'input_total > 1 && input_total <= 3' "$WARP_PROC" || \
+	die "WARP WO 命令参数边界检查未应用"
+grep -Fq '(sub_str = strsep(&cursor, " ")) != NULL' "$WARP_PROC" || \
+	die "WARP WO 命令解析并发修复未应用"
+! grep -Fq 'char *__strtok;' "$WARP_PROC" || \
+	die "WARP 仍包含非线程安全 strtok 状态"
+grep -Fq 'ring_id >= ring_ctrl->ring_num || idx >= ring_ctrl->ring_len' \
+	"$WORK_DIR/warp/warp/wed.c" || die "WARP WED ring 边界检查未应用"
+grep -Fq 'ring_id >= ring_ctrl->ring_num || idx >= ring_ctrl->ring_len' \
+	"$WORK_DIR/warp/warp/wdma.c" || die "WARP WDMA ring 边界检查未应用"
+grep -Fq 'void __iomem *base_addr;' "$WORK_DIR/warp/warp/mcu/warp_ccif.h" || \
+	die "WARP CCIF I/O 地址类型修复未应用"
+grep -Fq 'irq_dispose_mapping(ccif->irq);' "$WORK_DIR/warp/warp/mcu/warp_ccif.c" || \
+	die "WARP CCIF IRQ 映射释放修复未应用"
 
 replace_tree "$WORK_DIR/mtwifi" "$TOPDIR/package/mtk/drivers/mt_wifi/src"
 replace_tree "$WORK_DIR/warp/warp" "$TOPDIR/package/mtk/drivers/warp/src"
 replace_tree "$WORK_DIR/conninfra/conninfra" "$TOPDIR/package/mtk/drivers/conninfra/src"
 apply_openwrt_patch "$ASSET_DIR/patches/iwinfo-mtwifi-v7672.patch"
+apply_openwrt_patch "$ASSET_DIR/patches/110-mtwifi-secure-defaults.patch"
 
 MTWIFI_FW_DIR="$TOPDIR/package/mtk/drivers/mt_wifi/files/mt7986-fw-20240823"
 mkdir -p "$MTWIFI_FW_DIR"
@@ -186,10 +221,20 @@ EOF
 
 WARP_FW_DIR="$TOPDIR/package/mtk/drivers/warp/files/mt7986-fw-20231229"
 mkdir -p "$WARP_FW_DIR"
-for firmware in "$TOPDIR"/package/mtk/drivers/warp/src/bin/7986_WOCPU*_RAM_CODE_release.bin; do
-	[ -f "$firmware" ] || die "WARP 20231229 源码中缺少 MT7986 WO 固件"
-	install -m 0644 "$firmware" "$WARP_FW_DIR/$(basename -- "$firmware")"
+for stale_firmware in "$WARP_FW_DIR"/7986_WOCPU*_RAM_CODE_release.bin; do
+	[ ! -e "$stale_firmware" ] || rm -f -- "$stale_firmware"
 done
+while read -r firmware_hash firmware_name; do
+	firmware="$TOPDIR/package/mtk/drivers/warp/src/bin/$firmware_name"
+	[ -f "$firmware" ] || die "WARP 20231229 源码中缺少 $firmware_name"
+	actual_hash="$(sha256sum "$firmware" | awk '{print $1}')"
+	[ "$actual_hash" = "$firmware_hash" ] || \
+		die "WARP 固件 $firmware_name 校验失败：期望 $firmware_hash，实际 $actual_hash"
+	install -m 0644 "$firmware" "$WARP_FW_DIR/$firmware_name"
+done <<'EOF'
+79a50d78d87e5390f6dcb1b5a4b113781d37d82b46c6b4ba806c974310507d5a 7986_WOCPU0_RAM_CODE_release.bin
+7924a4a6dec1c775eb50bc2557706e81e9b7f57366c57beb9b767918d1f8c186 7986_WOCPU1_RAM_CODE_release.bin
+EOF
 
 MTWIFI_MAKEFILE="$TOPDIR/package/mtk/drivers/mt_wifi/Makefile"
 sed -i \
@@ -235,6 +280,12 @@ grep -q '^#define OID_GET_CEN_CH2.*0x09F1$' "$TOPDIR/package/mtk/drivers/mt_wifi
 grep -q '^#define OID_GET_CHANNEL_LIST.*0x09C0$' "$TOPDIR/package/mtk/drivers/mt_wifi/src/mt_wifi/embedded/include/oid.h" || die "mt_wifi CHANNEL_LIST OID 校验失败"
 grep -q '^#define OID_GET_CEN_CH1.*0x09F0$' "$TOPDIR/package/network/utils/iwinfo/src/mtwifi.h" || die "iwinfo CEN_CH1 OID 写入失败"
 grep -q '^#define OID_GET_CEN_CH2.*0x09F1$' "$TOPDIR/package/network/utils/iwinfo/src/mtwifi.h" || die "iwinfo CEN_CH2 OID 写入失败"
+grep -q 'set wireless\.default_${dev}\.encryption=psk2' \
+	"$TOPDIR/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh" || \
+	die "mtwifi 默认加密配置写入失败"
+grep -q 'set wireless\.default_${dev}\.key=${key}' \
+	"$TOPDIR/package/mtk/applications/mtwifi-cfg/files/mtwifi.sh" || \
+	die "mtwifi 默认密钥配置写入失败"
 
 cat > "$TOPDIR/package/mtk/drivers/mt_wifi/VERSION.v7672" <<EOF
 mt_wifi=7.6.7.2
@@ -244,6 +295,7 @@ conninfra=f2fa25
 datconf=757f9679
 source_commit=$LGS_COMMIT
 kernel=6.6
+port_revision=20260729.3
 EOF
 
 echo "已移植 mt_wifi 7.6.7.2 + MT7986 FW 20240823（Linux 6.6）"

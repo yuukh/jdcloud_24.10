@@ -31,19 +31,151 @@ diff --git a/warp_proc.c b/warp_proc.c
  #include "mcu/warp_woif.h"
  #include "mcu/warp_wo.h"
  #include "warp_meminfo_list.h"
-@@ -452,6 +452,11 @@
+@@ -60,6 +60,20 @@
+ };
+ 
+ static struct proc_global proc_settings;
++
++static int
++warp_proc_copy_from_user(char *dst, size_t dst_size,
++			 const char __user *src, size_t src_len)
++{
++	if (!src || !src_len || src_len >= dst_size)
++		return -EINVAL;
++
++	if (copy_from_user(dst, src, src_len))
++		return -EFAULT;
++
++	dst[src_len] = '\0';
++	return 0;
++}
+ 
+ /**
+  * strtok - Split a string into tokens
+@@ -189,7 +203,7 @@
+ 	char choice;
+ 	struct wdma_entry *wdma = (struct wdma_entry *)PDE_DATA(file_inode(file));
+ 
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
+ 		choice = warp_str_tol(value, &end, 10);
+ 		warp_dbg(WARP_DBG_OFF, "%s(): Choice=%d\n", __func__, choice);
+ 		wdma_proc_handle(wdma, choice, value);
+@@ -278,7 +292,7 @@
+ 	char choice;
+ 	struct wed_entry *wed = (struct wed_entry *)PDE_DATA(file_inode(file));
+ 
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
+ 		choice = warp_str_tol(value, &end, 10);
+ 		warp_dbg(WARP_DBG_OFF, "%s(): Choice=%d\n", __func__, choice);
+ 		wed_proc_handle(wed, choice, value);
+@@ -341,7 +355,7 @@
+ 	u32 cr_value = 0;
+ 	struct warp_entry *warp = (struct warp_entry *)PDE_DATA(file_inode(file));
+ 
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
+ 		token = strsep(&s, " ");
+ 		if(!token)
+ 			goto end;
+@@ -452,7 +466,7 @@
  	char *s = value;
  	struct warp_entry *warp = (struct warp_entry *)PDE_DATA(file_inode(file));
  
-+	if (len1 > 64 || len1 == 0) {
-+		warp_dbg(WARP_DBG_OFF, "%s(): invalid length len1 %d!\n", __func__, len1);
-+		goto end;
-+	}
-+
- 	if (buff && !copy_from_user(value, buff, len1)) {
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
  		token = strsep(&s, " ");
  		if(!token)
-@@ -1167,118 +1172,105 @@
+ 			goto end;
+@@ -524,7 +538,7 @@
+ 	struct warp_ctrl *ctrl = (struct warp_ctrl *)PDE_DATA(file_inode(file));
+ 	struct warp_cputracer *tracer = &ctrl->bus.tracer;
+ 
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
+ 		token = strsep(&s, " ");
+ 		if(!token)
+ 			goto end;
+@@ -644,7 +658,7 @@
+ 	unsigned int tmp;
+ 	struct warp_ctrl *ctrl = (struct warp_ctrl *)PDE_DATA(file_inode(file));
+ 
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
+ 		token = strsep(&s, ":");
+ 		if (token)
+ 			warp_idx = warp_str_tol(token, &end, 10);
+@@ -809,7 +823,7 @@
+ 	char log;
+ 	struct warp_entry *warp = (struct warp_entry *)PDE_DATA(file_inode(file));
+ 
+-	if (buff && !copy_from_user(value, buff, len1)) {
++	if (!warp_proc_copy_from_user(value, sizeof(value), buff, len1)) {
+ 		log = warp_str_tol(value, &end, 10);
+ 
+ 		switch (log) {
+@@ -902,1 +916,1 @@
+-	if (buff && !copy_from_user(buffer, buff, len1)) {
++	if (!warp_proc_copy_from_user(buffer, sizeof(buffer), buff, len1)) {
+@@ -904,2 +918,2 @@
+-		if (num < 0)
+-			return -1;
++		if (num != 1)
++			return -EINVAL;
+@@ -1033,18 +1047,24 @@
+ {
+ 	u8 *buffer = NULL, *type = NULL, *sub_str = NULL, *input[11] = {0};
+ 	struct warp_entry *warp = (struct warp_entry *)PDE_DATA(file_inode(file));
+-	int scan_num = 0, input_idx = 0, input_total = 0;
++	int input_idx = 0, input_total = 0;
++	u32 input_value;
+ 	struct warp_msg_cmd cmd = {0};
+ 	u8 sendmsg_buf[128] = {0};
+ 	struct wo_cmd_query *query = (struct wo_cmd_query *)sendmsg_buf;
+ 	int ret = -1;
+ 
++	if (!usr_buff || !len1 || len1 > PAGE_SIZE)
++		return -EINVAL;
++
+-	warp_os_alloc_mem((unsigned char **)&buffer, len1+1, GFP_ATOMIC);
++	warp_os_alloc_mem((unsigned char **)&buffer, len1+1, GFP_KERNEL);
+ 
+ 	if (buffer && usr_buff) {
+ 		memset(buffer, 0, len1+1);
+ 		if (!copy_from_user(buffer, usr_buff, len1)) {
+-			buffer[len1-1] = '\0';		/* forcedly replace "new line" character as termenation character */
++			buffer[len1] = '\0';
++			if (buffer[len1 - 1] == '\n')
++				buffer[len1 - 1] = '\0';
+ 			warp_dbg(WARP_DBG_INF, "(%s) buffer = %s\n", __func__, buffer);
+ 
+ 			for (sub_str = strtok(buffer, " "); sub_str && input_idx < 11; sub_str = strtok(NULL, " "), input_idx++, input_total++) {
+@@ -1085,16 +1105,19 @@
+ 					warp_dbg(WARP_DBG_OFF, "(%s) unknown comand string(%s)!\n", __func__, type);
+ 					goto error;
+ 				}
+-			} else if (input_total > 1) {
++			} else if (input_total > 1 && input_total <= 3) {
+ 				cmd.msg_len = sizeof(struct wo_cmd_query);
+ 
+ 				for (input_idx = 1 ; input_idx < input_total ; input_idx++) {
+-					scan_num = sscanf(input[input_idx], "%d", &query->query_arg0+(input_idx-1));
+-
+-					if (scan_num < 1) {
++					if (kstrtou32(input[input_idx], 10, &input_value)) {
+ 						warp_dbg(WARP_DBG_OFF, "(%s) require more input!\n", __func__);
+ 						goto error;
+ 					}
++
++					if (input_idx == 1)
++						query->query_arg0 = input_value;
++					else
++						query->query_arg1 = input_value;
+ 				}
+ 
+ 				if (strncmp(type, "devinfo", strlen(type)) == 0) {
+@@ -1167,118 +1190,105 @@
  /*
   * global file operation
  */
@@ -168,7 +300,7 @@ diff --git a/warp_proc.c b/warp_proc.c
 -	.read  = seq_read,
 -	.llseek = seq_lseek,
 -	.release = single_release,
-+static const struct proc_ops  proc_wdma_fops = {
++static const struct proc_ops proc_wdma_fops = {
 +	.proc_open = wdma_proc_open,
 +	.proc_write  = wdma_proc_write,
 +	.proc_read  = seq_read,
@@ -260,17 +392,41 @@ diff --git a/warp_utility.h b/warp_utility.h
  enum {
  	WARP_DBG_START,
  	WARP_DBG_OFF = WARP_DBG_START,
+diff --git a/wed.c b/wed.c
+--- a/wed.c	2023-12-29 05:52:42.000000000 +0000
++++ b/wed.c	2026-07-29 00:00:00.000000000 +0000
+@@ -807,10 +807,16 @@
+ {
+ 	struct warp_entry *warp = (struct warp_entry *)wed->warp;
+ 	struct wifi_entry *wifi = &warp->wifi;
+-	struct warp_ring *ring = &wed->res_ctrl.tx_ctrl.ring_ctrl.ring[ring_id];
++	struct wed_tx_ring_ctrl *ring_ctrl = &wed->res_ctrl.tx_ctrl.ring_ctrl;
++	struct warp_ring *ring;
+ 	u8 *addr;
+ 	u32 size;
+ 
++	if (ring_id >= ring_ctrl->ring_num || idx >= ring_ctrl->ring_len)
++		return;
++
++	ring = &ring_ctrl->ring[ring_id];
++
+ 	warp_dbg(WARP_DBG_OFF, "==========WED TX RING RAW (%d/0x%x)==========\n",
+ 		 ring_id, idx);
+ 	wifi_tx_ring_info_dump(wifi, ring_id, idx);
 diff --git a/wdma.c b/wdma.c
 --- a/wdma.c	2023-12-29 05:52:42.000000000 +0000
 +++ b/wdma.c	2026-07-20 13:03:29.766681104 +0000
-@@ -65,6 +65,11 @@
- 	struct warp_ring *ring = &wdma->res_ctrl.rx_ctrl.rx_ring_ctrl.ring[ring_id];
+@@ -65,6 +65,13 @@
+-	struct warp_ring *ring = &wdma->res_ctrl.rx_ctrl.rx_ring_ctrl.ring[ring_id];
++	struct wdma_rx_ring_ctrl *ring_ctrl = &wdma->res_ctrl.rx_ctrl.rx_ring_ctrl;
++	struct warp_ring *ring;
  	u8 *addr;
  	u32 size;
-+	if ((ring_id >= wdma->res_ctrl.rx_ctrl.rx_ring_ctrl.ring_num)
-+		|| (idx >= WED_TX_RING_SIZE)) {
++
++	if (ring_id >= ring_ctrl->ring_num || idx >= ring_ctrl->ring_len)
 +		return;
-+	}
++
++	ring = &ring_ctrl->ring[ring_id];
 +
  	/*WDMA Tx Ring content*/
  	warp_dbg(WARP_DBG_OFF, "==========WDMA RX RING RAW (%d/0x%x)==========\n",

@@ -1022,15 +1022,23 @@ diff --git a/mt_wifi/embedded/mcu/andes_mt.c b/mt_wifi/embedded/mcu/andes_mt.c
 diff --git a/mt_wifi/embedded/security/bn_lib.c b/mt_wifi/embedded/security/bn_lib.c
 --- a/mt_wifi/embedded/security/bn_lib.c	2023-12-29 06:37:55.000000000 +0000
 +++ b/mt_wifi/embedded/security/bn_lib.c	2026-07-20 12:58:54.830648595 +0000
-@@ -6399,7 +6399,7 @@
+@@ -6399,7 +6399,6 @@
  {
  	unsigned char *buf = NULL;
  	int ret = 0, bit, bytes, mask;
 -	time_t tim;
-+	ktime_t tim;
  	UINT32 i;
  
  	if (bits == 0) {
+@@ -6426,8 +6425,6 @@
+ 	}
+ 
+ 	/* make a random number and set the top and bottom bits */
+-	NdisGetSystemUpTime((ULONG *)(&tim));
+-
+ 	for (i = 0; i < bytes; i++)
+ 		buf[i] = randombyte();
+ 
 diff --git a/mt_wifi/embedded/sta/sta.c b/mt_wifi/embedded/sta/sta.c
 --- a/mt_wifi/embedded/sta/sta.c	2023-12-29 06:37:53.000000000 +0000
 +++ b/mt_wifi/embedded/sta/sta.c	2026-07-20 13:02:36.475395752 +0000
@@ -1115,12 +1123,14 @@ diff --git a/mt_wifi/include/os/rt_linux.h b/mt_wifi/include/os/rt_linux.h
 diff --git a/mt_wifi/include/os/rt_os.h b/mt_wifi/include/os/rt_os.h
 --- a/mt_wifi/include/os/rt_os.h	2023-12-29 05:53:10.000000000 +0000
 +++ b/mt_wifi/include/os/rt_os.h	2026-07-20 12:58:54.833981798 +0000
-@@ -33,7 +33,7 @@
+@@ -33,7 +33,8 @@
  #define _RT_OS_H_
  
- /* SIOCDEVPRIVATE and SIOCIWFIRSTPRIV always exist in sockios.h and wireless.h until latest kernel v5.6*/
+-/* SIOCDEVPRIVATE and SIOCIWFIRSTPRIV always exist in sockios.h and wireless.h until latest kernel v5.6*/
 -#if (KERNEL_VERSION(5, 6, 0) > LINUX_VERSION_CODE)
-+#if (KERNEL_VERSION(7, 6, 0) > LINUX_VERSION_CODE)
++/* OpenWrt mtwifi userspace requires the legacy SIOCIWFIRSTPRIV command ABI. */
++#if defined(CONFIG_SUPPORT_OPENWRT) || \
++	(LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0))
  
  #ifdef LINUX
  #if WIRELESS_EXT <= 11
@@ -1425,15 +1435,6 @@ diff --git a/mt_wifi/os/linux/rt_main_dev.c b/mt_wifi/os/linux/rt_main_dev.c
  
  #ifdef OS_ABL_SUPPORT
  RTMP_DRV_ABL_OPS RtmpDrvOps, *pRtmpDrvOps = &RtmpDrvOps;
-@@ -85,7 +82,7 @@
- 	NdisZeroMemory(&req, sizeof(req));
- 	rt28xx_ioctl(dev, (struct ifreq *)&req, SIOCGIWRATE);
- 	cmd->speed = req.u.bitrate.value/1000000; /* The speed is Mbit/s */
--
-+	printk("DBG2:: SIOCGIWRATE called, Rate = %lu",req.u.bitrate.value);
- 	return 0;
- }
- 
 diff --git a/mt_wifi/os/linux/rt_rbus_pci_util.c b/mt_wifi/os/linux/rt_rbus_pci_util.c
 --- a/mt_wifi/os/linux/rt_rbus_pci_util.c	2023-12-29 06:37:58.000000000 +0000
 +++ b/mt_wifi/os/linux/rt_rbus_pci_util.c	2026-07-20 12:58:54.837315002 +0000

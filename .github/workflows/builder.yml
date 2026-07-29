@@ -165,7 +165,9 @@ jobs:
         warp=20231229-5f71ec
         conninfra=f2fa25
         datconf=757f9679
+        source_commit=181a4ee52239d0fc9c2b38ec22d8ce1dc5c02026
         kernel=6.6
+        port_revision=20260729.3
         EOF
         for module in mt_wifi.ko mtk_warp_proxy.ko mtk_warp.ko conninfra.ko; do
           find build_dir -type f -name "$module" -print -quit | grep -q . || {
@@ -179,6 +181,12 @@ jobs:
           cd "$firmware_dir"
           sha256sum -c "$GITHUB_WORKSPACE/mt7986-fw-20240823/SHA256SUMS"
         )
+        manifest="$(find bin/targets/mediatek/filogic -maxdepth 1 \
+          -type f -name '*jdcloud_re-cp-03.manifest' -print -quit)"
+        [ -n "$manifest" ]
+        grep -Eq '^kmod-mt_wifi - [^ ]*\.7\.6\.7\.2-mt7986-r1$' "$manifest"
+        grep -Eq '^kmod-warp - [^ ]*\.20231229-5f71ec-r1$' "$manifest"
+        grep -Eq '^kmod-conninfra - [^ ]*\.f2fa25-r1$' "$manifest"
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=$(cat DEVICE_NAME)" >> $GITHUB_ENV
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*TARGET_.*_(.*)_DEVICE_.*=y/\1/' > TARGET_NAME
