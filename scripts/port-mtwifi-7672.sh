@@ -26,14 +26,23 @@ die() {
 for required in \
 	"$TOPDIR/rules.mk" \
 	"$TOPDIR/target/linux/mediatek/Makefile" \
+	"$TOPDIR/package/mtk/applications/datconf/Makefile" \
 	"$TOPDIR/package/mtk/drivers/mt_wifi/Makefile" \
 	"$TOPDIR/package/mtk/drivers/warp/Makefile" \
 	"$TOPDIR/package/mtk/drivers/conninfra/Makefile"; do
 	[ -f "$required" ] || die "不是受支持的 ImmortalWrt 源码树，缺少 $required"
 done
 
+for required_command in awk curl install patch sed sha256sum tar; do
+	command -v "$required_command" >/dev/null 2>&1 || \
+		die "缺少构建工具: $required_command"
+done
+
 grep -q '^KERNEL_PATCHVER:=6\.6$' "$TOPDIR/target/linux/mediatek/Makefile" || \
 	die "此移植仅适用于 MediaTek Linux 6.6 源码树"
+grep -Fqx 'PKG_SOURCE:=$(PKG_NAME)-$(PKG_REVISION).tar.bz2' \
+	"$TOPDIR/package/mtk/applications/datconf/Makefile" || \
+	die "datconf 包结构不受支持"
 
 for required_patch in \
 	mtwifi-7.6.7.2-linux-6.6.patch \
@@ -51,6 +60,7 @@ fetch_checked() {
 	local destination="$2"
 	local expected_hash="$3"
 	local actual_hash
+	local partial="${destination}.partial"
 
 	mkdir -p "$(dirname -- "$destination")"
 	if [ -f "$destination" ]; then
@@ -59,16 +69,23 @@ fetch_checked() {
 			echo "使用缓存: ${destination#$TOPDIR/}"
 			return
 		fi
-		mv "$destination" "${destination}.invalid.$$"
+		echo "删除校验失败的缓存: ${destination#$TOPDIR/}" >&2
+		rm -f -- "$destination"
 	fi
 
 	echo "下载: $relative_path"
-	curl -fL --retry 3 --retry-delay 2 \
-		-o "${destination}.partial" "$SOURCE_BASE/$relative_path"
-	actual_hash="$(sha256sum "${destination}.partial" | awk '{print $1}')"
-	[ "$actual_hash" = "$expected_hash" ] || \
+	rm -f -- "$partial"
+	if ! curl -fL --connect-timeout 20 --retry 5 --retry-delay 2 \
+		--retry-all-errors -o "$partial" "$SOURCE_BASE/$relative_path"; then
+		rm -f -- "$partial"
+		die "$relative_path 下载失败"
+	fi
+	actual_hash="$(sha256sum "$partial" | awk '{print $1}')"
+	if [ "$actual_hash" != "$expected_hash" ]; then
+		rm -f -- "$partial"
 		die "$relative_path 校验失败：期望 $expected_hash，实际 $actual_hash"
-	mv "${destination}.partial" "$destination"
+	fi
+	mv "$partial" "$destination"
 }
 
 replace_tree() {
@@ -126,9 +143,9 @@ tar -xJf "$TOPDIR/dl/$CONNINFRA_ARCHIVE" -C "$WORK_DIR/conninfra"
 [ -f "$WORK_DIR/warp/warp/Makefile" ] || die "WARP 压缩包目录结构异常"
 [ -f "$WORK_DIR/conninfra/conninfra/Makefile" ] || die "conninfra 压缩包目录结构异常"
 
-patch -s -d "$WORK_DIR/mtwifi" -p1 < "$ASSET_DIR/patches/mtwifi-7.6.7.2-linux-6.6.patch"
-patch -s -d "$WORK_DIR/warp/warp" -p1 < "$ASSET_DIR/patches/warp-20231229-linux-6.6.patch"
-patch -s -d "$WORK_DIR/conninfra/conninfra" -p1 < "$ASSET_DIR/patches/conninfra-20231229-linux-6.6.patch"
+patch -s --batch --forward -d "$WORK_DIR/mtwifi" -p1 < "$ASSET_DIR/patches/mtwifi-7.6.7.2-linux-6.6.patch"
+patch -s --batch --forward -d "$WORK_DIR/warp/warp" -p1 < "$ASSET_DIR/patches/warp-20231229-linux-6.6.patch"
+patch -s --batch --forward -d "$WORK_DIR/conninfra/conninfra" -p1 < "$ASSET_DIR/patches/conninfra-20231229-linux-6.6.patch"
 
 replace_tree "$WORK_DIR/mtwifi" "$TOPDIR/package/mtk/drivers/mt_wifi/src"
 replace_tree "$WORK_DIR/warp/warp" "$TOPDIR/package/mtk/drivers/warp/src"
@@ -137,12 +154,27 @@ apply_openwrt_patch "$ASSET_DIR/patches/iwinfo-mtwifi-v7672.patch"
 
 MTWIFI_FW_DIR="$TOPDIR/package/mtk/drivers/mt_wifi/files/mt7986-fw-20240823"
 mkdir -p "$MTWIFI_FW_DIR"
+firmware_count=0
 while read -r firmware_hash firmware_name; do
-	fetch_checked \
-		"package/mtk/drivers/mt_wifi/files/mt7986-fw-20240823/$firmware_name" \
-		"$TOPDIR/dl/mt7986-fw-20240823/$firmware_name" \
-		"$firmware_hash"
-	install -m 0644 "$TOPDIR/dl/mt7986-fw-20240823/$firmware_name" "$MTWIFI_FW_DIR/$firmware_name"
+	bundled_firmware="$ASSET_DIR/mt7986-fw-20240823/$firmware_name"
+	cached_firmware="$TOPDIR/dl/mt7986-fw-20240823/$firmware_name"
+	if [ -f "$bundled_firmware" ]; then
+		actual_hash="$(sha256sum "$bundled_firmware" | awk '{print $1}')"
+		[ "$actual_hash" = "$firmware_hash" ] || \
+			die "仓库固件 $firmware_name 校验失败：期望 $firmware_hash，实际 $actual_hash"
+		echo "使用仓库固件: mt7986-fw-20240823/$firmware_name"
+		firmware_source="$bundled_firmware"
+	else
+		fetch_checked \
+			"package/mtk/drivers/mt_wifi/files/mt7986-fw-20240823/$firmware_name" \
+			"$cached_firmware" \
+			"$firmware_hash"
+		firmware_source="$cached_firmware"
+	fi
+	install -m 0644 "$firmware_source" "$MTWIFI_FW_DIR/$firmware_name"
+	actual_hash="$(sha256sum "$MTWIFI_FW_DIR/$firmware_name" | awk '{print $1}')"
+	[ "$actual_hash" = "$firmware_hash" ] || die "安装后的固件 $firmware_name 校验失败"
+	firmware_count=$((firmware_count + 1))
 done <<'EOF'
 f8ef9893fe422d24ac4454fa2177a99112d5ada99ec206e2b665f60c09210387 7986_WACPU_RAM_CODE_release.bin
 5eb175d860cc6f148cfa894ec796f1c64bfd23295d3eb235642205b68e147dfc WIFI_RAM_CODE_MT7986.bin
@@ -150,6 +182,7 @@ f8ef9893fe422d24ac4454fa2177a99112d5ada99ec206e2b665f60c09210387 7986_WACPU_RAM_
 9dba42e316c8fcfe821bbf0e3b34c6a6e7e418688831a7dfb24e17589fedfb4e mt7986_patch_e1_hdr.bin
 a62951769098b056ff3644881c171716a68b617223aa139b3bca5cf4f29b3070 mt7986_patch_e1_hdr_mt7975.bin
 EOF
+[ "$firmware_count" -eq 5 ] || die "MT7986 20240823 固件数量异常: $firmware_count"
 
 WARP_FW_DIR="$TOPDIR/package/mtk/drivers/warp/files/mt7986-fw-20231229"
 mkdir -p "$WARP_FW_DIR"

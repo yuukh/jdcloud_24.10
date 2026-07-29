@@ -157,14 +157,28 @@ jobs:
         cd openwrt
         echo -e "$(nproc) thread compile"
         make -j$(nproc) V=s || make -j1 V=s
-        grep -Fx 'mt_wifi=7.6.7.2' package/mtk/drivers/mt_wifi/VERSION.v7672
-        grep -Fx 'mt7986_fw=20240823' package/mtk/drivers/mt_wifi/VERSION.v7672
-        for module in mt_wifi.ko mtk_warp.ko conninfra.ko; do
+        while read -r expected_version; do
+          grep -Fx "$expected_version" package/mtk/drivers/mt_wifi/VERSION.v7672
+        done <<'EOF'
+        mt_wifi=7.6.7.2
+        mt7986_fw=20240823
+        warp=20231229-5f71ec
+        conninfra=f2fa25
+        datconf=757f9679
+        kernel=6.6
+        EOF
+        for module in mt_wifi.ko mtk_warp_proxy.ko mtk_warp.ko conninfra.ko; do
           find build_dir -type f -name "$module" -print -quit | grep -q . || {
             echo "Missing compiled module: $module" >&2
             exit 1
           }
         done
+        firmware_dir="$(find build_dir -type d -path '*/kmod-mt_wifi/lib/firmware' -print -quit)"
+        [ -n "$firmware_dir" ]
+        (
+          cd "$firmware_dir"
+          sha256sum -c "$GITHUB_WORKSPACE/mt7986-fw-20240823/SHA256SUMS"
+        )
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=$(cat DEVICE_NAME)" >> $GITHUB_ENV
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*TARGET_.*_(.*)_DEVICE_.*=y/\1/' > TARGET_NAME
