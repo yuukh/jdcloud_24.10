@@ -111,17 +111,20 @@ jobs:
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
     - name: 设置LAN IP地址（路由器登录地址）
+      env:
+        SET_IP: ${{ github.event.inputs.LAN_IP || '192.168.1.1' }}
       run: |
         cd openwrt
-        SET_IP=${{ github.event.inputs.LAN_IP }}
         if [[ $SET_IP =~ ^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then
             #修改immortalwrt.lan关联IP
-            sed -i "s/192\.168\.[0-9]*\.[0-9]*/$SET_IP/g" $(find feeds/luci/modules/luci-mod-system -type f -name "flash.js")
+            find feeds/luci/modules/luci-mod-system -type f -name "flash.js" -exec sed -i "s/192\.168\.[0-9]*\.[0-9]*/$SET_IP/g" {} +
             #修改默认IP地址
             sed -i "s/192\.168\.[0-9]*\.[0-9]*/$SET_IP/g" package/base-files/files/bin/config_generate
             echo "Set LAN IP Address: $SET_IP"
+            echo "IP_ADDR=$SET_IP" >> $GITHUB_ENV
         else
-            echo "Invalid IP address, use default."
+            echo "Invalid IP address: $SET_IP"
+            exit 1
         fi
 
     - name: 取消编译dockerman
@@ -156,8 +159,6 @@ jobs:
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=$(cat DEVICE_NAME)" >> $GITHUB_ENV
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*TARGET_.*_(.*)_DEVICE_.*=y/\1/' > TARGET_NAME
         [ -s TARGET_NAME ] && echo "TARGET_NAME=$(cat TARGET_NAME)" >> $GITHUB_ENV
-        sed -n 's/.*lan) ipad=${ipaddr:-"\([0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\)"} ;;.*/\1/p' package/base-files/files/bin/config_generate | head -n 1 > IP_ADDR
-        [ -s IP_ADDR ] && echo "IP_ADDR=$(cat IP_ADDR)" >> $GITHUB_ENV
         if grep -q 'CONFIG_PACKAGE_luci-app-dockerman=y' .config; then
                 echo "BUILD_DOCKERMAN=-docker" >> $GITHUB_ENV
         else
@@ -172,7 +173,7 @@ jobs:
 
     - name: 整理文件并重命名
       id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      if: success() && env.UPLOAD_FIRMWARE == 'true'
       run: | 
         cd openwrt/bin/targets/*/*
         rm -rf packages
@@ -184,14 +185,14 @@ jobs:
 
     - name: 打包上传固件到Actions Artifacts
       uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
+      if: success() && steps.organize.outputs.status == 'success'
       with:
         name: ${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}
         path: ${{ env.FIRMWARE }}
 
     - name: 生成固件Release标签
       id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: success() && env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
       run: |
         touch release.txt
         echo "- 使用源码：${{ env.REPO_URL }}" >> release.txt
@@ -207,7 +208,7 @@ jobs:
 
     - name: 发布固件至Release
       uses: softprops/action-gh-release@v2.1.0
-      if: steps.tag.outputs.status == 'success' && !cancelled()
+      if: success() && steps.tag.outputs.status == 'success'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:

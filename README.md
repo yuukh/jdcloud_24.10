@@ -26,10 +26,10 @@
 
 #### 🌐 网络工具
 
-- **VPN 服务**: WireGuard, OpenVPN Server, IPSec VPN (多用户)
+- **VPN 服务**: WireGuard, OpenVPN Server
 - **网络管理**:
   - DDNS (支持阿里云、Cloudflare、DNSPOD、GoDaddy、NoIP、Route53 等多家服务商)
-  - UPnP, Wake on LAN (含增强版 `wolplus`)
+  - UPnP, Wake on LAN
   - SQM QoS 流量控制
   - 带宽限速 (eqos-mtk)
   - 网络加速 (TurboACC-MTK)
@@ -58,18 +58,17 @@
 #### 🎨 Web 界面主题
 
 - Argon 主题 (+ argon-config)
-- Bootstrap Mod 主题
-- Design 主题
+- Bootstrap 主题
 
 #### 🛠️ 系统工具
 
 - **终端**: ttyd Web 终端, zsh shell
 - **编辑器**: vim-fuller, nano
-- **监控**: htop 进程监控、日志查看器
+- **监控**: htop 进程监控、系统日志 (logd)
 - **管理工具**:
   - 命令执行 (commands)
-  - 定时任务管理 (crontab)
-  - 网络时间同步 (NTP)
+  - 定时任务 (BusyBox crond)
+  - 网络时间同步 (BusyBox ntpd)
   - 以太网唤醒
 - **其他**: MT WiFi 配置工具 (mtwifi-cfg)
 
