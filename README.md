@@ -174,6 +174,7 @@ echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.defau
   - **SSID**: `ImmortalWrt`
   - **加密**: WPA2-PSK (psk2)
   - **密码**: `immortalwrt`
+  - 全新启动或不保留配置升级时应用默认值；保留配置升级不会覆盖现有 WiFi 设置
 - **SSH**: 默认启用，端口 22
 
 ## ⚠️ 注意事项
