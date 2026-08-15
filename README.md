@@ -40,7 +40,6 @@
 - **网络测试**: iperf3, tcping, tcpdump, mtr
 - **安全 / 其他**:
   - VLMCSD KMS 服务器
-  - Lucky 网络工具箱
   - MSB Lite (组播转单播)
 
 #### 💾 存储与文件系统
