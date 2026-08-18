@@ -5,7 +5,7 @@
  }
  
 +notify_reload_done() {
-+	ubus send firewall.reload.done '{}' >/dev/null 2>&1 || true
++	ubus call service event '{"type":"firewall.reload.done","data":{}}' >/dev/null 2>&1 || true
 +}
 +
  while [ -n "$1" ]; do
