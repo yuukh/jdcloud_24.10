@@ -1,0 +1,64 @@
+--- a/package/mtk/drivers/wifi-profile/files/mt7986/mt7986-ax6000.dbdc.b0.dat
++++ b/package/mtk/drivers/wifi-profile/files/mt7986/mt7986-ax6000.dbdc.b0.dat
+@@ -113,7 +113,7 @@ DLSCapable=0
+ DscpPriMapEnable=0
+ DtimPeriod=1
+-E2pAccessMode=2
++E2pAccessMode=4
+ EAPifname=br-lan
+ EDCCAEnable=1
+ EncrypType=NONE
+--- a/package/mtk/drivers/wifi-profile/files/mt7986/mt7986-ax6000.dbdc.b1.dat
++++ b/package/mtk/drivers/wifi-profile/files/mt7986/mt7986-ax6000.dbdc.b1.dat
+@@ -116,7 +116,7 @@ DLSCapable=0
+ DscpPriMapEnable=0
+ DtimPeriod=1
+-E2pAccessMode=2
++E2pAccessMode=4
+ EAPifname=br-lan
+ EDCCAEnable=1
+ EncrypType=NONE
+--- /dev/null
++++ b/package/base-files/files/etc/uci-defaults/98-jdcloud-mtwifi-bin-eeprom
+@@ -0,0 +1,41 @@
++#!/bin/sh
++
++. /lib/functions/system.sh
++
++TAG="jdcloud-mtwifi-eeprom"
++PROFILES="
++/etc/wireless/mediatek/mt7986-ax6000.dbdc.b0.dat
++/etc/wireless/mediatek/mt7986-ax6000.dbdc.b1.dat
++"
++CHANGED=0
++
++[ "$(board_name)" = "jdcloud,re-cp-03" ] || return 0
++
++for profile in $PROFILES; do
++	if [ ! -f "$profile" ]; then
++		logger -t "$TAG" "missing $profile; retrying migration on next boot"
++		return 1
++	fi
++
++	mode="$(sed -n 's/^E2pAccessMode=//p' "$profile" | head -n 1)"
++	case "$mode" in
++		2)
++			sed -i 's/^E2pAccessMode=2$/E2pAccessMode=4/' "$profile" || return 1
++			CHANGED=1
++			;;
++		4)
++			;;
++		*)
++			logger -t "$TAG" "unexpected E2pAccessMode='$mode' in $profile; leaving it untouched"
++			return 1
++			;;
++	esac
++done
++
++if [ "$CHANGED" -eq 1 ]; then
++	logger -t "$TAG" "migrated preserved MT7986 profiles from FLASH mode to BIN mode"
++else
++	logger -t "$TAG" "MT7986 profiles already use BIN mode"
++fi
++
++return 0

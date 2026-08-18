@@ -1,0 +1,16 @@
+--- a/package/mtk/drivers/mt_wifi/src/mt_wifi/embedded/common/eeprom.c
++++ b/package/mtk/drivers/mt_wifi/src/mt_wifi/embedded/common/eeprom.c
+@@ -1362,9 +1362,12 @@ INT RtmpChipOpsEepromHook(RTMP_ADAPTER *pAd, INT infType, INT forceMode)
+ 		if (pAd->E2pAccessMode == E2P_NONE)
+ 			pAd->E2pAccessMode = e2p_default;
+ 
+-		if (infType == RTMP_DEV_INF_RBUS) {
++		/* RBUS normally uses flash-backed EEPROM. Keep an explicitly
++		 * requested BIN mode for eMMC boards that extract calibration
++		 * data into /lib/firmware before the Wi-Fi driver is initialized. */
++		if (infType == RTMP_DEV_INF_RBUS && e2p_type != E2P_BIN_MODE)
+ 			e2p_type = E2P_FLASH_MODE;
+-		}
+ 
+ #ifdef RTMP_EFUSE_SUPPORT
+ 
