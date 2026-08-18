@@ -23,6 +23,11 @@ on:
         required: true
         default: false
         type: boolean
+      SHOW_PATCHED_CODE:
+        description: 'Show final patched code before compile'
+        required: false
+        default: false
+        type: boolean
       ssh:
         description: 'SSH connection to Actions'
         required: false
@@ -148,6 +153,84 @@ jobs:
         make download -j$(nproc)
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
+
+    - name: 显示补丁后的最终代码
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.SHOW_PATCHED_CODE }}
+      run: |
+        set -euo pipefail
+        cd openwrt
+
+        # 只执行 prepare，让 package patch 落到真实构建源码；不进行编译。
+        if ! make -j1 package/feeds/packages/miniupnpd/prepare V=s > /tmp/miniupnpd-prepare.log 2>&1; then
+          cat /tmp/miniupnpd-prepare.log
+          exit 1
+        fi
+        if ! make -j1 package/network/config/firewall4/prepare V=s > /tmp/firewall4-prepare.log 2>&1; then
+          cat /tmp/firewall4-prepare.log
+          exit 1
+        fi
+
+        MINIUPNPD_SRC="$(find build_dir -type f -path '*/miniupnpd-*/miniupnpd.c' -print -quit)"
+        FIREWALL4_SRC="$(find build_dir -type f -path '*/firewall4-*/root/sbin/fw4' -print -quit)"
+        [ -n "$MINIUPNPD_SRC" ] || { echo "miniupnpd prepared source not found" >&2; exit 1; }
+        [ -n "$FIREWALL4_SRC" ] || { echo "firewall4 prepared source not found" >&2; exit 1; }
+
+        show_patch_context() {
+          local title="$1"
+          local file="$2"
+          local pattern="$3"
+          local context="${4:-3}"
+          echo
+          echo "===== $title ====="
+          echo "file: $file"
+          grep -n -F -B "$context" -A "$context" -- "$pattern" "$file" || {
+            echo "expected patched content not found: $pattern" >&2
+            exit 1
+          }
+        }
+
+        show_patch_context "miniupnpd: reserved/private IPv4 reconnect" "$MINIUPNPD_SRC" \
+          '(!reserved || GETFLAG(ALLOWPRIVATEIPV4MASK))' 4
+
+        echo
+        echo "===== firewall4: reload-complete event ====="
+        echo "file: $FIREWALL4_SRC"
+        grep -n -E -B 3 -A 3 -- 'notify_reload_done|start "\$1" && notify_reload_done|start && notify_reload_done' "$FIREWALL4_SRC" || {
+          echo "expected firewall4 patched content not found" >&2
+          exit 1
+        }
+
+        show_patch_context "miniupnpd package: firewall resync helper" \
+          feeds/packages/net/miniupnpd/Makefile 'miniupnpd.firewall' 3
+        show_patch_context "miniupnpd init: fw4 debounce trigger" \
+          feeds/packages/net/miniupnpd/files/miniupnpd.init 'firewall.reload.done' 3
+
+        echo
+        echo "===== miniupnpd helper: restore mappings after fw4 rebuild ====="
+        echo "file: feeds/packages/net/miniupnpd/files/miniupnpd.firewall"
+        cat feeds/packages/net/miniupnpd/files/miniupnpd.firewall
+
+        show_patch_context "PR #430: ebtables IPv6 protocol argument" \
+          package/mtk/applications/luci-app-eqos-mtk/root/etc/init.d/dhcp_mark.sh \
+          'ebtables -t nat -A eqos -p ipv6' 3
+
+        echo
+        echo "===== HNAT: cpu_to_ge_bypass cached switch ====="
+        echo "file: target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c"
+        grep -n -F -B 3 -A 3 -- 'cpu_to_ge_bypass' \
+          target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c || {
+          echo "expected HNAT patched content not found" >&2
+          exit 1
+        }
+
+        echo
+        echo "===== HNAT package: default parameter and persistent conffile ====="
+        echo "file: package/kernel/linux/modules/netdevices.mk"
+        grep -n -E -B 3 -A 3 -- 'MODPARAMS\.mtkhnat|mediatek_hnat/conffiles|20-mediatek_hnat' \
+          package/kernel/linux/modules/netdevices.mk || {
+          echo "expected HNAT package patched content not found" >&2
+          exit 1
+        }
 
     - name: 编译固件
       id: compile

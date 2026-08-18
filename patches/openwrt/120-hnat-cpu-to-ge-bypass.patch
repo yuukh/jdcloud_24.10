@@ -1,0 +1,53 @@
+--- a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
++++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+@@ -13,6 +13,7 @@
+ 
+ #include <linux/netfilter_bridge.h>
+ #include <linux/netfilter_ipv6.h>
++#include <linux/module.h>
+ 
+ #include <linux/of.h>
+ #include <net/arp.h>
+@@ -36,6 +37,11 @@
+ extern atomic_t eth1_in_br;
+ struct net_device *br_dev;
+ struct net_device *eth1_dev;
++
++static bool cpu_to_ge_bypass = true;
++module_param(cpu_to_ge_bypass, bool, 0444);
++MODULE_PARM_DESC(cpu_to_ge_bypass,
++		 "Bypass the CPU-to-GE HNAT path (default: Y)");
+ #define do_ge2ext_fast(dev, skb)                                               \
+ 	(skb_hnat_is_hashed(skb) && !is_from_extge(skb) && \
+ 	 skb_hnat_reason(skb) == HIT_BIND_FORCE_TO_CPU)
+@@ -1004,6 +1010,9 @@
+ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
+ {
++	if (likely(cpu_to_ge_bypass))
++		return -1;
++
+ 	if (unlikely(skb_shinfo(skb)->frag_list))
+                 return -1;
+ 	if (unlikely(skb->mark == HNAT_EXCEPTION_TAG))
+ 				return -1;
+--- a/package/kernel/linux/modules/netdevices.mk
++++ b/package/kernel/linux/modules/netdevices.mk
+@@ -2092,6 +2092,7 @@ define KernelPackage/mediatek_hnat
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Mediatek HNAT module
+   AUTOLOAD:=$(call AutoLoad,20,mtkhnat)
++  MODPARAMS.mtkhnat:=cpu_to_ge_bypass=1
+   DEPENDS:=@TARGET_mediatek +kmod-nf-conntrack +wireless-tools +@KERNEL_WIRELESS_EXT
+   KCONFIG:= \
+ 	CONFIG_BRIDGE_NETFILTER=y \
+@@ -2100,6 +2101,10 @@ define KernelPackage/mediatek_hnat
+   FILES:= \
+         $(LINUX_DIR)/drivers/net/ethernet/mediatek/mtk_hnat/mtkhnat.ko
+ endef
++
++define KernelPackage/mediatek_hnat/conffiles
++/etc/modules.d/20-mediatek_hnat
++endef
+ 
+ define KernelPackage/mediatek_hnat/description
+   Kernel modules for MediaTek HW NAT offloading

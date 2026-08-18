@@ -1,0 +1,48 @@
+--- a/feeds/packages/net/miniupnpd/Makefile
++++ b/feeds/packages/net/miniupnpd/Makefile
+@@ -98,10 +98,12 @@ define Package/miniupnpd/install/Default
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_DIR) $(1)/etc/config
+ 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
++	$(INSTALL_DIR) $(1)/usr/share/miniupnpd
+ 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/miniupnpd $(1)/usr/sbin/miniupnpd
+ 	$(INSTALL_BIN) ./files/miniupnpd.init $(1)/etc/init.d/miniupnpd
+ 	$(INSTALL_CONF) ./files/upnpd.config $(1)/etc/config/upnpd
+ 	$(INSTALL_DATA) ./files/miniupnpd.hotplug $(1)/etc/hotplug.d/iface/50-miniupnpd
++	$(INSTALL_BIN) ./files/miniupnpd.firewall $(1)/usr/share/miniupnpd/firewall-reload
+ endef
+ 
+ define Package/miniupnpd-iptables/install
+--- a/feeds/packages/net/miniupnpd/files/miniupnpd.init
++++ b/feeds/packages/net/miniupnpd/files/miniupnpd.init
+@@ -220,4 +220,6 @@ start_service() {
+ 
+ service_triggers() {
+ 	procd_add_reload_trigger "upnpd"
++	[ "$FW" = "fw4" ] && procd_add_raw_trigger "firewall.reload.done" 2000 \
++		"/usr/share/miniupnpd/firewall-reload"
+ }
+--- /dev/null
++++ b/feeds/packages/net/miniupnpd/files/miniupnpd.firewall
+@@ -0,0 +1,21 @@
++#!/bin/sh
++
++SERVICE=/etc/init.d/miniupnpd
++
++# The firewall event is global. Only touch miniupnpd if it was already
++# running; in particular, never start a disabled/stopped service here.
++"$SERVICE" running || exit 0
++command -v nft >/dev/null 2>&1 || exit 0
++
++# A normal fw4 rebuild recreates these static chains before emitting the
++# event. Refuse to restart if they are absent so miniupnpd cannot trigger a
++# compensating fw4 reload and enter a firewall <-> miniupnpd reload loop.
++for chain in upnp_forward upnp_prerouting upnp_postrouting; do
++	nft -s -t -n list chain inet fw4 "$chain" >/dev/null 2>&1 || {
++		logger -t miniupnpd "fw4 reload completed without $chain; skip automatic resync"
++		exit 0
++	}
++done
++
++logger -t miniupnpd "fw4 ruleset rebuilt; restarting to restore dynamic mappings"
++exec "$SERVICE" restart

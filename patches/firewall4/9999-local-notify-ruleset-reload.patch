@@ -1,0 +1,30 @@
+--- a/root/sbin/fw4
++++ b/root/sbin/fw4
+@@ -81,6 +81,10 @@ lookup() {
+ 		flock -x $LOCK utpl -S $MAIN
+ }
+ 
++notify_reload_done() {
++	ubus send firewall.reload.done '{}' >/dev/null 2>&1 || true
++}
++
+ while [ -n "$1" ]; do
+ 	case "$1" in
+ 		-q)
+@@ -99,7 +103,7 @@ done
+ 
+ case "$1" in
+ 	start|reload)
+-		start "$1"
++		start "$1" && notify_reload_done
+ 	;;
+ 	stop)
+ 		stop || die "The fw4 firewall does not appear to be loaded, try fw4 flush to delete all rules."
+@@ -111,6 +115,6 @@ case "$1" in
+ 		QUIET=1 print | nft ${VERBOSE} -c -f $STDIN || die "The rendered ruleset contains errors, not doing firewall restart."
+ 		stop || rm -f $STATE
+-		start
++		start && notify_reload_done
+ 	;;
+ 	check)
+ 		if [ -n "$QUIET" ]; then

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 #
 # https://github.com/P3TERX/Actions-OpenWrt
 # File name: diy-part2.sh
@@ -9,6 +10,34 @@
 # This is free software, licensed under the MIT License.
 # See /LICENSE for more information.
 #
+
+DIY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_DIR="$DIY_DIR/patches"
+
+apply_source_patch() {
+	local patch_file="$1"
+
+	echo "Applying ${patch_file#"$DIY_DIR/"}"
+	git apply --check "$patch_file"
+	git apply "$patch_file"
+}
+
+# Install package-source patches into the source/feeds fetched by the workflow.
+# These are deliberately copied after `feeds install -a`, so they always target
+# the exact miniupnpd/firewall4 packages that the current build will compile.
+install -Dm0644 \
+	"$PATCH_DIR/miniupnpd/9999-local-fix-private-ip-reconnect.patch" \
+	feeds/packages/net/miniupnpd/patches/9999-local-fix-private-ip-reconnect.patch
+install -Dm0644 \
+	"$PATCH_DIR/firewall4/9999-local-notify-ruleset-reload.patch" \
+	package/network/config/firewall4/patches/9999-local-notify-ruleset-reload.patch
+
+# Patch OpenWrt/package integration files after feeds are populated. A dry-run
+# is performed first so an upstream layout change fails the workflow instead of
+# silently producing a firmware without the requested fixes.
+apply_source_patch "$PATCH_DIR/openwrt/100-miniupnpd-fw4-lifecycle.patch"
+apply_source_patch "$PATCH_DIR/openwrt/110-pr430-fix-ebtables-ipv6.patch"
+apply_source_patch "$PATCH_DIR/openwrt/120-hnat-cpu-to-ge-bypass.patch"
 
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate
