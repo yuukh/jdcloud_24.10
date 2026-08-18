@@ -160,20 +160,62 @@ jobs:
         set -euo pipefail
         cd openwrt
 
-        # 只执行 prepare，让 package patch 落到真实构建源码；不进行编译。
-        if ! make -j1 package/feeds/packages/miniupnpd/prepare V=s > /tmp/miniupnpd-prepare.log 2>&1; then
-          cat /tmp/miniupnpd-prepare.log
-          exit 1
-        fi
-        if ! make -j1 package/network/config/firewall4/prepare V=s > /tmp/firewall4-prepare.log 2>&1; then
-          cat /tmp/firewall4-prepare.log
-          exit 1
-        fi
+        # Do not call OpenWrt package/*/prepare here: prepare may require host
+        # tools which are only built later by the normal compile stage. Instead,
+        # unpack the already downloaded source archives with the runner's tools
+        # and apply the package patch directories in the same lexical order.
+        PATCH_VIEW_TMP="$(mktemp -d)"
+        trap 'rm -rf "$PATCH_VIEW_TMP"' EXIT
 
-        MINIUPNPD_SRC="$(find build_dir -type f -path '*/miniupnpd-*/miniupnpd.c' -print -quit)"
-        FIREWALL4_SRC="$(find build_dir -type f -path '*/firewall4-*/root/sbin/fw4' -print -quit)"
-        [ -n "$MINIUPNPD_SRC" ] || { echo "miniupnpd prepared source not found" >&2; exit 1; }
-        [ -n "$FIREWALL4_SRC" ] || { echo "firewall4 prepared source not found" >&2; exit 1; }
+        extract_archive() {
+          local archive="$1"
+          local dest="$2"
+
+          mkdir -p "$dest"
+          case "$archive" in
+            *.tar.gz|*.tgz) tar -xzf "$archive" -C "$dest" ;;
+            *.tar.xz) tar -xJf "$archive" -C "$dest" ;;
+            *.tar.bz2) tar -xjf "$archive" -C "$dest" ;;
+            *.tar.zst|*.tar.zstd) tar --zstd -xf "$archive" -C "$dest" ;;
+            *.tar) tar -xf "$archive" -C "$dest" ;;
+            *)
+              echo "unsupported source archive: $archive" >&2
+              exit 1
+              ;;
+          esac
+        }
+
+        apply_package_patches() {
+          local src_root="$1"
+          local patch_dir="$2"
+          local patch_file
+
+          [ -d "$patch_dir" ] || return 0
+          while IFS= read -r patch_file; do
+            if ! patch --batch --forward --silent -d "$src_root" -p1 < "$patch_file"; then
+              echo "failed to apply package patch: $patch_file" >&2
+              exit 1
+            fi
+          done < <(find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
+        }
+
+        MINIUPNPD_ARCHIVE="$(find dl -maxdepth 1 -type f -name 'miniupnpd-*.tar.*' -print -quit)"
+        FIREWALL4_ARCHIVE="$(find dl -maxdepth 1 -type f -name 'firewall4-*.tar.*' -print -quit)"
+        [ -n "$MINIUPNPD_ARCHIVE" ] || { echo "miniupnpd source archive not found in dl/" >&2; exit 1; }
+        [ -n "$FIREWALL4_ARCHIVE" ] || { echo "firewall4 source archive not found in dl/" >&2; exit 1; }
+
+        extract_archive "$MINIUPNPD_ARCHIVE" "$PATCH_VIEW_TMP/miniupnpd"
+        extract_archive "$FIREWALL4_ARCHIVE" "$PATCH_VIEW_TMP/firewall4"
+
+        MINIUPNPD_SRC="$(find "$PATCH_VIEW_TMP/miniupnpd" -type f -name miniupnpd.c -print -quit)"
+        FIREWALL4_SRC="$(find "$PATCH_VIEW_TMP/firewall4" -type f -path '*/root/sbin/fw4' -print -quit)"
+        [ -n "$MINIUPNPD_SRC" ] || { echo "miniupnpd source not found after extraction" >&2; exit 1; }
+        [ -n "$FIREWALL4_SRC" ] || { echo "firewall4 source not found after extraction" >&2; exit 1; }
+
+        MINIUPNPD_ROOT="$(dirname "$MINIUPNPD_SRC")"
+        FIREWALL4_ROOT="${FIREWALL4_SRC%/root/sbin/fw4}"
+        apply_package_patches "$MINIUPNPD_ROOT" feeds/packages/net/miniupnpd/patches
+        apply_package_patches "$FIREWALL4_ROOT" package/network/config/firewall4/patches
 
         show_patch_context() {
           local title="$1"
