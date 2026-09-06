@@ -29,9 +29,9 @@ apply_source_patch() {
 	fi
 }
 
-# Segment local GSO traffic before PPE reinjection, restore HNAT metadata on
-# every segment, and keep the complete flow on the PPE -> WED -> Wi-Fi path.
-apply_source_patch 100-hnat-cpu-wifi-gso-segmentation.patch
+# Fix local CPU -> PPE -> WED -> Wi-Fi reinjection metadata/ownership while
+# keeping hardware TSO, SG and checksum offloads available to supported flows.
+apply_source_patch 100-hnat418-openwrt.patch
 
 # Set secure MTK Wi-Fi defaults at config-generation time. Existing wireless
 # configuration retained across sysupgrade is intentionally left untouched.
