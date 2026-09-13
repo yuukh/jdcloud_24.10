@@ -3,6 +3,9 @@
 name: RE-CP-03 HNAT418 diagnostic firmware
 
 on:
+  push:
+    branches:
+      - debug_hnat418
   workflow_dispatch:
     inputs:
       LAN_IP:
