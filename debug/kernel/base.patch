@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,120 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef MTK_HNAT_CPU_H
 +#define MTK_HNAT_CPU_H
@@ -20,10 +20,15 @@
 +	return hnat_cpu_has_ingress_port(skb) && is_from_extge(skb);
 +}
 +
++static bool hnat_cpu_has_valid_info(const struct sk_buff *skb)
++{
++	return hnat_cpu_has_ingress_port(skb) &&
++	       IS_SPACE_AVAILABLE_HEAD(skb) && is_magic_tag_valid(skb);
++}
++
 +static bool hnat_cpu_has_ingress_info(const struct sk_buff *skb)
 +{
-+	if (!hnat_cpu_has_ingress_port(skb) ||
-+	    !IS_SPACE_AVAILABLE_HEAD(skb) || !is_magic_tag_valid(skb))
++	if (!hnat_cpu_has_valid_info(skb))
 +		return false;
 +
 +	return FROM_GE_PPD(skb) || FROM_GE_LAN(skb) || FROM_GE_WAN(skb) ||

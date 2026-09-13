@@ -64,11 +64,14 @@ struct h418_session {
 	refcount_t refs;
 	__be32 server, peer;
 	u16 port;
-	bool hardware, capture, frozen;
+	bool hardware, frozen;
+	u8 capture; /* 0: quiet, 1: DSACK trigger, 2: TCP recovery trigger */
 	u32 freeze_reason;
+	raw_spinlock_t freeze_lock;
 	unsigned long deadline;
 	u64 started_ns, frozen_ns;
 	atomic_t dsacks;
+	atomic_t trigger_reason;
 	struct delayed_work freeze_work;
 	struct h418_ring *rings;
 	unsigned int cpus;
@@ -183,7 +186,7 @@ static void h418_sack(const struct sk_buff *skb, const struct h418_packet *p,
 	int length = p->tcp.doff * 4 - sizeof(p->tcp), i = 0, j;
 	u32 left, right, ack = ntohl(p->tcp.ack_seq);
 
-	if (!length)
+	if (!length || !p->tcp.ack)
 		return;
 	options = skb_header_pointer(skb, p->tcpoff + sizeof(p->tcp), length, buf);
 	if (!options)
@@ -208,8 +211,12 @@ static void h418_sack(const struct sk_buff *skb, const struct h418_packet *p,
 				r->sack[j] = cpu_to_le32(get_unaligned_be32(options + i + 2 + j * 4));
 			left = le32_to_cpu(r->sack[0]);
 			right = le32_to_cpu(r->sack[1]);
+			/* An empty/reversed range is not evidence of duplication. */
+			if (!before(left, right))
+				break;
 			r->dsack = !after(right, ack) ||
 				(r->sack_count > 1 &&
+				 before(le32_to_cpu(r->sack[2]), le32_to_cpu(r->sack[3])) &&
 				 !before(left, le32_to_cpu(r->sack[2])) &&
 				 !after(right, le32_to_cpu(r->sack[3])));
 			break;
@@ -218,14 +225,47 @@ static void h418_sack(const struct sk_buff *skb, const struct h418_packet *p,
 	}
 }
 
+static void h418_freeze(struct h418_session *s, unsigned int reason)
+{
+	unsigned long flags;
+
+	/* Manual and automatic freeze must agree on one immutable header. */
+	raw_spin_lock_irqsave(&s->freeze_lock, flags);
+	if (!smp_load_acquire(&s->frozen)) {
+		WRITE_ONCE(s->frozen_ns, ktime_get_ns());
+		WRITE_ONCE(s->freeze_reason, reason);
+		smp_store_release(&s->frozen, true);
+	}
+	raw_spin_unlock_irqrestore(&s->freeze_lock, flags);
+}
+
 static void h418_freeze_work(struct work_struct *work)
 {
 	struct h418_session *s = container_of(to_delayed_work(work),
 					     struct h418_session, freeze_work);
 
-	WRITE_ONCE(s->frozen_ns, ktime_get_ns());
-	WRITE_ONCE(s->freeze_reason, 1); /* Sixteen DSACK ACKs, then 100 ms. */
-	smp_store_release(&s->frozen, true);
+	h418_freeze(s, atomic_read(&s->trigger_reason));
+}
+
+static void h418_manual_freeze(struct h418_session *s)
+{
+	h418_freeze(s, 2);
+	/* A writer that passed the frozen check can still queue freeze_work.
+	 * Drain it before cancellation, not afterwards, so the snapshot cannot
+	 * change under an open reader.
+	 */
+	synchronize_rcu();
+	cancel_delayed_work_sync(&s->freeze_work);
+}
+
+static void h418_trigger(struct h418_session *s, unsigned int reason)
+{
+	/* Only the first trigger owns the work item. No allocation or mode
+	 * switch in the datapath. A short tail preserves more pre-event history
+	 * in the software-segmented bypass round.
+	 */
+	if (atomic_cmpxchg(&s->trigger_reason, 0, reason) == 0)
+		schedule_delayed_work(&s->freeze_work, msecs_to_jiffies(20));
 }
 
 void __h418_record(const struct sk_buff *skb, unsigned int stage,
@@ -237,6 +277,7 @@ void __h418_record(const struct sk_buff *skb, unsigned int stage,
 	struct h418_ring *ring;
 	unsigned long irqflags;
 	unsigned int cpu;
+	bool recovery = false;
 
 	rcu_read_lock();
 	s = rcu_dereference(h418_current);
@@ -251,8 +292,14 @@ void __h418_record(const struct sk_buff *skb, unsigned int stage,
 	if (stage == H418_TCP_ACK) {
 		if (p.down)
 			goto out;
+		/* Counters are per socket, before processing this particular ACK.
+		 * Ignore isolated startup/tail probes; preserve later recovery even
+		 * when a burst of non-retransmission DSACK feedback arrived first.
+		 */
+		recovery = s->capture == 2 && (a >= 32 || b);
 		h418_sack(skb, &p, &r);
-		if (!r.sack_count && !p.tcp.syn && !p.tcp.fin && !p.tcp.rst)
+		if (!r.sack_count && !p.tcp.syn && !p.tcp.fin && !p.tcp.rst &&
+		    !recovery)
 			goto out;
 	}
 	r.cookie = cpu_to_le32(hash_ptr(skb, 32));
@@ -300,12 +347,25 @@ void __h418_record(const struct sk_buff *skb, unsigned int stage,
 	ring->count++;
 	raw_spin_unlock_irqrestore(&ring->lock, irqflags);
 	put_cpu();
-	if (r.dsack && atomic_inc_return(&s->dsacks) == 16)
-		schedule_delayed_work(&s->freeze_work, msecs_to_jiffies(100));
+	if (r.dsack && atomic_inc_return(&s->dsacks) == 16 && s->capture == 1)
+		h418_trigger(s, 1);
+	if (recovery)
+		h418_trigger(s, 3);
 out:
 	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(__h418_record);
+
+void __h418_tcp_ack(const struct sock *sk, const struct sk_buff *skb)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+
+	/* tcp_v4_do_rcv owns the socket. Observe only: do not change RACK,
+	 * SACK validation, packet contents or congestion control.
+	 */
+	__h418_record(skb, H418_TCP_ACK, tp->total_retrans,
+		      tp->reord_seen, tp->dsack_dups);
+}
 
 static void h418_put(struct h418_session *s)
 {
@@ -364,18 +424,12 @@ static ssize_t h418_control_write(struct file *file, const char __user *user,
 			ret = -ENOENT;
 			goto out;
 		}
-		cancel_delayed_work_sync(&s->freeze_work);
-		if (!s->frozen) {
-			s->frozen_ns = ktime_get_ns();
-			s->freeze_reason = 2;
-			smp_store_release(&s->frozen, true);
-		}
-		synchronize_rcu();
+		h418_manual_freeze(s);
 		goto out;
 	}
 	if (sscanf(buf, "arm %15s %15s %u %u %u %u %c", server, peer,
 		   &port, &hardware, &capture, &seconds, &extra) != 6 ||
-	    port < 5201 || port > 5204 || hardware > 1 || capture > 1 ||
+	    port < 5201 || port > 5204 || hardware > 1 || capture > 2 ||
 	    seconds < 10 || seconds > 300 || nr_cpu_ids > H418_MAX_CPUS) {
 		ret = -EINVAL;
 		goto out;
@@ -391,6 +445,7 @@ static ssize_t h418_control_write(struct file *file, const char __user *user,
 		goto out;
 	}
 	refcount_set(&s->refs, 1);
+	raw_spin_lock_init(&s->freeze_lock);
 	INIT_DELAYED_WORK(&s->freeze_work, h418_freeze_work);
 	if (!in4_pton(server, -1, (u8 *)&s->server, -1, NULL) ||
 	    !in4_pton(peer, -1, (u8 *)&s->peer, -1, NULL) ||

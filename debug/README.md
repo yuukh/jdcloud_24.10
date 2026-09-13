@@ -49,14 +49,16 @@ Windows 使用系统 OpenSSH 客户端和 PowerShell 5.1，不需要 Python、Wi
 
 | 端口 | 模式 | 内核记录 |
 |---|---|---|
-| 5201 | 候选硬件路径 A | 开启 |
-| 5202 | 同一固件、本机流量绕过对照 | 开启 |
+| 5201 | 候选硬件路径 A | 开启，DSACK 触发 |
+| 5202 | 同一固件、本机流量绕过对照 | 开启，DSACK 触发 |
 | 5203 | 候选硬件路径、不记录对照 | 关闭 |
-| 5204 | 候选硬件路径 B | 开启 |
+| 5204 | 候选硬件路径 B | 开启，发送端恢复线索触发 |
 
 四轮使用不同端口和新连接，不在存活连接中途切换路径。
 这不是原 main 固件与候选固件的完整对照：四轮共享相同内核修补，只改变被测连接的本机 PPE 注入开关。
-Windows 只负责发起测试和下载；关键路径、ACK/SACK、系统状态和服务端 iperf 日志均由路由器记录。
+关键路径、ACK/SACK、系统状态和服务端 iperf 日志均由路由器记录。
+Windows 除了发起测试和下载，还会尽力只读保存网卡驱动版本、RSC 状态和统计；
+不修改网卡设置，不需要另外操作，不支持的命令记为不可用而不阻断测试。
 
 结果在 Windows `results-日期时间` 目录，核心文件为 `router-evidence.tar.gz`，并附四轮客户端 JSON。
 中途失败尽量自动下载 `router-partial-evidence.tar.gz`；即使 SSH 中断，原始文件保留在路由器 `/overlay/hnat418-debug/run-*`，最新成功打包文件是 `/overlay/hnat418-debug/latest.tar.gz`。
@@ -81,7 +83,13 @@ Windows 只负责发起测试和下载；关键路径、ACK/SACK、系统状态�
 记录单调时间、五元组、序号区间、IP ID/TTL、GSO size/segs、skb 匿名 cookie、HNAT 原始 metadata、队列与描述符索引等。**不记录业务 payload、不输出原始内核指针**。
 
 每 CPU 16384 条、每条 144 字节；四核记录缓冲约 9 MiB，只在测试启动时分配。
-收到 16 个带 DSACK 的 ACK 后再记录 100 ms，然后自动冻结异常窗口；**冻结只停止记录，不改变当前硬件发送模式**。
+5201/5202 收到 16 个带有效 DSACK 的 ACK 后请求再记录 20 ms，再自动冻结。
+5204 不再因这类早期 DSACK 冻结，而是在收到 ACK 时观察该 socket 的累计重传达到 32，
+或者 `reord_seen` 非零，再请求记录 20 ms；这是有明确阈值的诊断触发，不保证复现另一轮的故障。
+**冻结只停止记录，不改变当前硬件发送模式**。该尾窗受内核调度影响，实际时间以记录为准。
+冻结原因 1 是 DSACK，2 是手动结束，3 是恢复线索。手动和自动冻结竞争时保留第一次冻结的头部信息。
+新固件的 TCP_ACK 记录 `a/b/c` 分别为接收当前 ACK 之前的 `total_retrans/reord_seen/dsack_dups`；
+旧固件这三个字段为保留值，不能把旧记录里的零当作真实 socket 统计。build-manifest 中注明此能力。
 未触发时在该轮结束冻结。每 CPU 已覆盖的旧记录数量写入文件，解析器检验保留区间序号完整性，不将环形缓冲当成全程无损追踪。
 样本、快照和 iperf 日志有时间/数量上限；至少要求 96 MiB 可用 RAM 和 128 MiB 可用 overlay，单次运行证据目录限制 64 MiB，正常结束保留最近两次原始目录和一个最新压缩包。
 断电可能丢失尚在 RAM 中的记录，不能宣称电源故障后也必然取得异常现场。
@@ -93,6 +101,20 @@ Windows 只负责发起测试和下载；关键路径、ACK/SACK、系统状态�
 ```sh
 python3 debug/decode.py router-evidence.tar.gz --output /cache/hnat418-report --full-events
 ```
+
+综合服务端、客户端和记录窗口的可复核审计：
+
+```sh
+python3 debug/analyze_session.py results/router-evidence.tar.gz --clients results
+```
+
+`dsack_path_coverage` 按反向四元组、序号区间和 ACK 前 500 ms 的保留记录关联各发送阶段，
+正确处理 GSO、多个相邻分段和序号回绕；不会把多个阶段或分段数当成重复发包次数。
+最小覆盖为零只代表可见证据有缺口；覆盖为一也不证明无线硬件实际只发出一次。
+
+2026-09-14 这轮的实机结论、残留 metadata 消费点修复和证据边界见
+`results/2026-09-14-post-provenance-audit.md`。本次同时包含 mt_wifi tuple 写入前的来源检查，
+由 `install.py` 安装为对应驱动包补丁；必须用新的构建缓存重新生成匹配固件，不能只替换分析脚本。
 
 查看同一 TCP 序号/IP ID 在 IP_OUT、CPU_INJECT、QDMA_MAP 是否重复，迟到范围是否误判 ingress，是否出现 PPE 例外后 Wi-Fi 软件 TX，再结合 DSACK 和 socket 累计计数。
 `QDMA_MAP` 表示完整描述符链已经构造、尚未发布；`DMA_RELEASE` 表示 skb 回收，**均不等于客户端成功接收**。

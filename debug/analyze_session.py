@@ -31,6 +31,146 @@ def inside(seq, length, point):
     return 0 < length < 2**31 and ((point - seq) & 0xffffffff) < length
 
 
+def interfaces(text):
+    """Use snapshot interface indexes; never assume eth0/rax0 numbering."""
+    return {int(index): name.split('@')[0] for index, name in
+            re.findall(r'^([0-9]+): ([^ :]+):', text, re.M)}
+
+
+def metadata_trust(rows, layout):
+    """Audit an explicitly selected packed HNAT layout; never auto-guess it."""
+    if layout not in ('legacy', 'rx-v2'):
+        raise ValueError('Specify the layout of the running HNAT module')
+    alg_bit = 23 if layout == 'legacy' else 31
+    counts, origins, examples = Counter(), {}, []
+    for row in rows:
+        if row['iif'] or row['no_fdb']:
+            continue
+        tag = ((row['meta1'] >> 4) if layout == 'legacy' else (row['meta2'] >> 16)) & 0xffff
+        key = identity(row)
+        if row['stage_name'] == 'ip_out':
+            origins[key] = row
+            if tag == 0x6789:
+                counts['local_ip_out_with_old_valid_tag'] += 1
+        elif row['stage_name'] == 'bridge_decision':
+            original = origins.get(key)
+            if (original is None or tag != 0x6789 or
+                    not 0 <= row['ns'] - original['ns'] <= 500_000_000):
+                continue
+            if (row['meta0'] ^ original['meta0'] == 1 << alg_bit and
+                    row['meta0'] & (1 << alg_bit) and
+                    row['meta1'] == original['meta1'] and row['meta2'] == original['meta2']):
+                counts['local_ip_to_bridge_only_alg_set'] += 1
+                if len(examples) < 4:
+                    examples.append({'ip_out_ns': original['ns'], 'bridge_ns': row['ns'],
+                                     'seq': row['seq'], 'payload': row['payload'],
+                                     'before_meta0': f'{original["meta0"]:08x}',
+                                     'after_meta0': f'{row["meta0"]:08x}'})
+    return {'layout': layout, **counts, 'examples': examples,
+            'limits': 'Requires the correct compiled HNAT descriptor layout. '
+                      'A metadata mutation is not proof of the cause of duplicate reception.'}
+
+
+def span_coverage(intervals, length):
+    """Minimum/maximum observed coverage, not the number of on-air copies."""
+    edges = Counter({0: 0, length: 0})
+    for left, right in intervals:
+        edges[left] += 1
+        edges[right] -= 1
+    positions = sorted(edges)
+    count, minimum, maximum = 0, len(intervals), 0
+    for position, following in zip(positions, positions[1:]):
+        count += edges[position]
+        if following > position:
+            minimum, maximum = min(minimum, count), max(maximum, count)
+    return minimum, maximum
+
+
+def dsack_paths(rows, metadata=None, names=None, lookback_ns=500_000_000):
+    """Correlate reverse-flow DSACK spans against retained TX stage ranges.
+
+    A 64-KiB sequence bucket index handles GSO, segmentation and wrap without
+    a quadratic full-trace scan. Arbitrarily large untrusted spans are bounded.
+    Multiple adjacent software segments count as one coverage, not duplicates.
+    """
+    metadata, names = metadata or {}, names or {}
+    if not 0 < lookback_ns < 2**63:
+        raise ValueError('Positive bounded lookback required')
+    stages = {'ip_out', 'cpu_inject', 'qdma_map_complete', 'device_xmit', 'ppe_rx'}
+    maximum_span = 1 << 20
+    index = defaultdict(list)
+    indexed, skipped = {}, 0
+
+    def buckets(seq, length):
+        return {bucket & 0xffff for bucket in range(seq >> 16, ((seq + length - 1) >> 16) + 1)}
+
+    for number, row in enumerate(rows):
+        if row['stage_name'] not in stages or not row['payload']:
+            continue
+        if not 0 < row['payload'] <= maximum_span:
+            skipped += 1
+            continue
+        indexed[number] = row
+        for bucket in buckets(row['seq'], row['payload']):
+            index[(flow(row), bucket)].append(number)
+
+    counts, spans, patterns, examples = Counter(), Counter(), Counter(), {}
+    for ack in rows:
+        if ack['stage_name'] != 'tcp_ack' or not ack['dsack'] or not ack['sacks']:
+            continue
+        left, right = ack['sacks'][0]
+        length = (right - left) & 0xffffffff
+        if not 0 < length <= maximum_span:
+            counts['invalid_or_excessive_dsack_spans'] += 1
+            continue
+        counts['retained_dsack_acks'] += 1
+        spans[length] += 1
+        downflow = (ack['dst'], ack['src'], ack['dport'], ack['sport'])
+        candidates = {number for bucket in buckets(left, length)
+                      for number in index.get((downflow, bucket), ())}
+        covered, sample = defaultdict(list), []
+        for number in sorted(candidates):
+            row = indexed[number]
+            if not 0 <= ack['ns'] - row['ns'] <= lookback_ns:
+                continue
+            offset = ((row['seq'] - left + 2**31) & 0xffffffff) - 2**31
+            start, end = max(0, offset), min(length, offset + row['payload'])
+            if start >= end:
+                continue
+            label = row['stage_name']
+            if label == 'device_xmit':
+                device = names.get(row.get('ifindex', 0), 'ifindex-' + str(row.get('ifindex', 0)))
+                label += ':' + device
+            covered[label].append((start, end))
+            if len(sample) < 12:
+                sample.append({key: row[key] for key in
+                               ('ns', 'stage_name', 'seq', 'payload', 'ip_id')})
+        pattern = tuple((stage, *span_coverage(intervals, length))
+                        for stage, intervals in sorted(covered.items()))
+        patterns[pattern] += 1
+        if pattern not in examples and len(examples) < 16:
+            examples[pattern] = {'ack_ns': ack['ns'], 'ack': ack['ack'],
+                                 'span': [left, right], 'observations': sample}
+    overwritten = sum(cpu['overwritten'] for cpu in metadata.get('cpu_counts', []))
+    return {
+        **counts, 'lookback_ns': lookback_ns, 'overwritten_records': overwritten,
+        'skipped_excessive_data_spans': skipped,
+        'dsack_span_lengths': dict(sorted(spans.items())),
+        'patterns': [{'acks': count, 'coverage': {
+            stage: {'minimum_observations': low, 'maximum_observations': high}
+            for stage, low, high in pattern}, 'example': examples.get(pattern)}
+            for pattern, count in patterns.most_common()],
+        'limits': [
+            'Only retained records in the stated pre-ACK time window are compared.',
+            'Each stage is separate; a GSO span is not a wire packet count.',
+            'Minimum zero means incomplete observed span, not a network drop.',
+            'One observed submission does not prove one hardware transmission.',
+            'DSACK is receiver feedback, not an independent capture of received data.',
+            'Overwritten history cannot establish absence of earlier transmissions.',
+        ],
+    }
+
+
 def provenance(rows):
     emitted = {}
     originals = defaultdict(list)
@@ -100,7 +240,7 @@ def tcp_counters(text):
     return result
 
 
-def analyze(archive_path, clients=None):
+def analyze(archive_path, clients=None, metadata_layout=None):
     with tarfile.open(archive_path, 'r:*') as archive:
         members = {}
         total = 0
@@ -165,10 +305,13 @@ def analyze(archive_path, clients=None):
                 basic = summarize(metadata, rows)
                 round_result['trace'] = {key: basic[key] for key in (
                     'started_ns', 'frozen_ns', 'retained_interval_ns', 'cpu_counts',
-                    'dsack_acks', 'stage_counts', 'bridge_decisions', 'ppe_cpu_reasons')}
+                    'dsack_acks', 'freeze_reason', 'stage_counts', 'bridge_decisions', 'ppe_cpu_reasons')}
                 round_result['trace']['repeated_header_key_counts'] = {
                     key: len(value) for key, value in basic['repeated_header_keys'].items()}
                 round_result['provenance'] = provenance(rows)
+                if metadata_layout is not None:
+                    round_result['metadata_trust'] = metadata_trust(rows, metadata_layout)
+                round_result['dsack_path_coverage'] = dsack_paths(rows, metadata, interfaces(before))
                 round_result['foe_lookup_reasons'] = dict(Counter(
                     row['a'] for row in rows if row['stage_name'] == 'foe_lookup'))
             result['rounds'][label] = round_result
@@ -179,5 +322,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', type=Path)
     parser.add_argument('--clients', type=Path)
+    parser.add_argument('--hnat-metadata-layout', choices=('legacy', 'rx-v2'),
+                        help='Only set after verifying the running module descriptor layout')
     args = parser.parse_args()
-    print(json.dumps(analyze(args.archive, args.clients), indent=2))
+    print(json.dumps(analyze(args.archive, args.clients, args.hnat_metadata_layout), indent=2))

@@ -44,12 +44,16 @@ def install(source):
     default = 'ipad=${ipaddr:-"192.168.6.1"}'
     if text.count(default) != 1:
         raise RuntimeError('Unexpected pinned-source LAN generator; refusing a blind replacement.')
+    wifi_patch = ROOT / 'mt_wifi/999-hnat418-local-tuple-provenance.patch'
+    subprocess.run(['git', '-C', str(source), 'apply', '--check',
+                    '--directory=package/mtk/drivers/mt_wifi/src', str(wifi_patch)], check=True)
     subprocess.run(['git', '-C', str(source), 'apply', '--check', str(ROOT / 'kernel/base.patch')], check=True)
     subprocess.run(['git', '-C', str(source), 'apply', str(ROOT / 'kernel/base.patch')], check=True)
     files = source / 'target/linux/mediatek/files-6.6'
     shutil.copytree(ROOT / 'overlay', files, dirs_exist_ok=True)
     shutil.copyfile(ROOT / 'kernel/hooks.patch', source /
                     'target/linux/mediatek/patches-6.6/9999999-hnat418-bounded-debug.patch')
+    shutil.copyfile(wifi_patch, source / 'package/mtk/drivers/mt_wifi/patches' / wifi_patch.name)
     configure(source / 'target/linux/mediatek/filogic/config-6.6', {
         'CONFIG_HNAT418_DEBUG': 'y', 'CONFIG_IKCONFIG': 'y', 'CONFIG_IKCONFIG_PROC': 'y',
     })
@@ -61,6 +65,8 @@ def install(source):
     shutil.copytree(ROOT / 'package', package)
     manifest = ['hnat418-debug-format=1', 'upstream=' + UPSTREAM_REV,
                 'firmware-repo=' + command('git', '-C', ROOT.parent, 'rev-parse', 'HEAD'),
+                'tcp-ack-counters=total_retrans,reord_seen,dsack_dups',
+                'capture-modes=0:quiet,1:dsack,2:recovery',
                 'source-note=IPv4 scoped diagnostic build, not a final HNAT fix']
     manifest.append('fresh-install-lan=' + ip)
     for path in sorted(ROOT.rglob('*')):

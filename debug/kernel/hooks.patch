@@ -1,8 +1,9 @@
 Subject: [PATCH] net: add bounded HNAT 418 diagnostics and explicit test selector
 
-The candidate datapath is unchanged inside the selected test flow. Other
-local flows keep main's bypass. There is no driver unload, forced module
-load, skb allocation or console output in the observation path.
+Keep the selected CPU-to-PPE test flow; other local flows bypass it. Reject
+recycled metadata at all local-output and Wi-Fi binding consumers, without
+writing to a possibly shared skb head. The observation path never allocates
+an skb, prints a packet, unloads a driver or changes TCP recovery behavior.
 
 --- a/net/Kconfig
 +++ b/net/Kconfig
@@ -61,7 +62,7 @@ load, skb allocation or console output in the observation path.
  	enum skb_drop_reason reason;
  	struct sock *rsk;
  
-+	h418_record(skb, H418_TCP_ACK, 0, 0, 0);
++	h418_tcp_ack(sk, skb);
  	if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
  		struct dst_entry *dst;
  
@@ -130,6 +131,15 @@ load, skb allocation or console output in the observation path.
  #define do_ge2ext_fast(dev, skb)                                               \
  	(skb_hnat_is_hashed(skb) && !is_from_extge(skb) && \
  	 skb_hnat_reason(skb) == HIT_BIND_FORCE_TO_CPU)
+@@ -1949,3 +1958,8 @@ int mtk_sw_nat_hook_tx(struct sk_buff *skb, int gmac_no)
+ 	int bind_state = 0;
++	/* A local bypass skb can still contain a valid recycled head tag.
++	 * Reject it before any metadata access; never clear a shared head.
++	 */
++	if (!hnat_cpu_has_valid_info(skb))
++		return NF_ACCEPT;
+ 	if (skb_hnat_alg(skb) || !is_hnat_info_filled(skb) ||
+ 	    !is_magic_tag_valid(skb) || !IS_SPACE_AVAILABLE_HEAD(skb))
 @@ -1977,3 +1978,5 @@ int mtk_sw_nat_hook_tx(struct sk_buff *skb, int gmac_no)
  	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
 +	h418_record(skb, H418_WIFI_BIND, gmac_no,
@@ -143,6 +153,31 @@ load, skb allocation or console output in the observation path.
 +		    skb_hnat_entry(skb), READ_ONCE(*(u32 *)entry));
  	return NF_ACCEPT;
  }
+@@ -2281,18 +2298,21 @@ static unsigned int mtk_hnat_nf_post_routing(
+ 	struct flow_offload_hw_path hw_path = { .dev = (struct net_device*)out,
+ 						.virt_dev = (struct net_device*)out,
+ 						.flags = 0,
+-						.skb_hash = skb_hnat_entry(skb) };
++						.skb_hash = 0 };
+ 	const struct net_device *arp_dev = out;
+ 	
+ 
+ 	if (skb->protocol == htons(ETH_P_IPV6) && !hnat_priv->ipv6_en) {
+ 		return 0;
+ 	}
+ 
+ 
+-	if (skb_hnat_alg(skb) || unlikely(!is_magic_tag_valid(skb) ||
+-					  !IS_SPACE_AVAILABLE_HEAD(skb)))
++	if (!hnat_cpu_has_valid_info(skb) || skb_hnat_alg(skb))
++		return 0;
++	if (skb_hnat_entry(skb) >= hnat_priv->foe_etry_num ||
++	    skb_hnat_ppe(skb) >= CFG_PPE_NUM)
+ 		return 0;
++	hw_path.skb_hash = skb_hnat_entry(skb);
+ 
+ 	if (unlikely(!skb_mac_header_was_set(skb)))
+ 		return 0;
 @@ -2326,3 +2331,5 @@ static unsigned int mtk_hnat_nf_post_routing(
  	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
 +	h418_record(skb, H418_FOE_LOOKUP, skb_hnat_reason(skb),
@@ -154,6 +189,30 @@ load, skb allocation or console output in the observation path.
 +		    hnat_cpu_has_ingress_info(skb), state->out->ifindex);
  	if ((!strncmp(state->out->name, "ra0", 3) ||
  	     !strncmp(state->out->name, "rax0", 4)) &&
+@@ -2705,18 +2725,19 @@ mtk_hnat_ipv4_nf_local_out(void *priv, struct sk_buff *skb,
+ {
+ 	struct foe_entry *entry;
+ 	struct iphdr *iph;
+ 
+-	if (!is_magic_tag_valid(skb))
+-		return NF_ACCEPT;
+-
+-	if (unlikely(skb_headroom(skb) < FOE_INFO_LEN))
++	/* Local packets have no RX metadata, including TCP payload clones. */
++	if (!hnat_cpu_has_valid_info(skb))
+ 		return NF_ACCEPT;
+ 
+ 	if (!skb_hnat_is_hashed(skb))
+ 		return NF_ACCEPT;
+ 
++	if (skb_hnat_entry(skb) >= hnat_priv->foe_etry_num ||
++	    skb_hnat_ppe(skb) >= CFG_PPE_NUM)
++		return NF_ACCEPT;
+ 	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
+ 
+ 	/* Make the flow from local not be bound. */
+ 	iph = ip_hdr(skb);
+ 	if (iph->protocol == IPPROTO_IPV6) {
 --- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
 +++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
 @@ -56,6 +56,13 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)

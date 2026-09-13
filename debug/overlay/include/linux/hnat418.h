@@ -29,6 +29,7 @@ DECLARE_STATIC_KEY_FALSE(h418_capture_key);
 DECLARE_STATIC_KEY_FALSE(h418_session_key);
 void __h418_record(const struct sk_buff *skb, unsigned int stage,
 		   u32 a, u32 b, u32 c);
+void __h418_tcp_ack(const struct sock *sk, const struct sk_buff *skb);
 bool __h418_hardware_test(const struct sk_buff *skb);
 
 static inline void h418_record(const struct sk_buff *skb, unsigned int stage,
@@ -36,6 +37,12 @@ static inline void h418_record(const struct sk_buff *skb, unsigned int stage,
 {
 	if (static_branch_unlikely(&h418_capture_key))
 		__h418_record(skb, stage, a, b, c);
+}
+
+static inline void h418_tcp_ack(const struct sock *sk, const struct sk_buff *skb)
+{
+	if (static_branch_unlikely(&h418_capture_key))
+		__h418_tcp_ack(sk, skb);
 }
 
 /* Outside the explicitly armed IPv4 test flow, keep main's local bypass. */
@@ -48,6 +55,7 @@ static inline bool h418_hardware_test(const struct sk_buff *skb)
 #else
 static inline void h418_record(const struct sk_buff *skb, unsigned int stage,
 			       u32 a, u32 b, u32 c) {}
+static inline void h418_tcp_ack(const struct sock *sk, const struct sk_buff *skb) {}
 static inline bool h418_hardware_test(const struct sk_buff *skb)
 {
 	return false;

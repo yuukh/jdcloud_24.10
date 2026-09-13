@@ -66,6 +66,8 @@ class WindowsRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('router-evidence.tar.gz', files)
         self.assertEqual(sum(name.startswith('client-52') for name in files), 4)
+        self.assertIn('client-network-before.txt', files)
+        self.assertIn('client-network-after.txt', files)
 
     def test_failure_downloads_partial_archive(self):
         result, files = self.run_runner(True)
@@ -89,6 +91,8 @@ class WindowsRunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('router-evidence.tar.gz', files)
         self.assertNotIn('router-control.txt', files)
+        self.assertNotIn('client-network-before.txt', files)
+        self.assertNotIn('client-network-after.txt', files)
         self.assertFalse(any(name.startswith('client-52') for name in files))
 
     def test_failed_copy_is_not_a_completed_archive(self):

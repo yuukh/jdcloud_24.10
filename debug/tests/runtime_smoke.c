@@ -113,6 +113,11 @@ int main(void)
         events += count;
     }
     check(events > 0, "real TCP traffic recorded");
+    check(control("arm 127.0.0.1 127.0.0.2 5204 1 3 20\n") == -1 && errno == EINVAL,
+          "unknown capture mode rejected");
+    check(control("arm 127.0.0.1 127.0.0.2 5204 1 2 20\n") == 0, "recovery arm");
+    check(control("freeze\n") == 0, "recovery manual freeze");
+    check(control("stop\n") == 0, "recovery stop");
     for (int i = 0; i < 25; i++) {
         check(control("arm 127.0.0.1 127.0.0.2 5203 1 0 20\n") == 0, "quiet arm");
         check(control("freeze\n") == 0, "quiet freeze");

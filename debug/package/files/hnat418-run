@@ -205,7 +205,7 @@ run_one() {
     SAMPLER_PID=
     printf 'freeze\n' > "$DEBUG/control"
     cat "$DEBUG/status" > "$dir/final-status.txt"
-    if [ "$capture" = 1 ]; then
+    if [ "$capture" -ne 0 ]; then
         cat "$DEBUG/records" > "$dir/records.bin.part"
         mv "$dir/records.bin.part" "$dir/records.bin"
     fi
@@ -225,7 +225,9 @@ run_one() {
 run_one 5201 1 1 hardware-a
 run_one 5202 0 1 bypass
 run_one 5203 1 0 hardware-quiet
-run_one 5204 1 1 hardware-b
+# Preserve a later recovery/ordering event instead of freezing both hardware
+# recordings on the first burst of non-retransmission DSACK feedback.
+run_one 5204 1 2 hardware-b
 
 nft delete table inet "$NFT_TABLE"
 FIREWALL_CREATED=0

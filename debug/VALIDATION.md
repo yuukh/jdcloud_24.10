@@ -1,6 +1,47 @@
-# 验证记录（2026-09-13）
+# 验证记录
 
-## 本轮：实机反馈后的来源判定修复
+## 2026-09-14：残留 metadata 消费点与捕获修复
+
+输入与实机证据见 `results/2026-09-14-post-provenance-audit.md`。
+以下验证针对本次修改后的源码，不沿用旧版测试结果。
+
+| 验证 | 本次实际结果 |
+|---|---|
+| 固定 Linux 6.6.133 的完整 kernel 补丁序列 | 零 fuzz 应用成功 |
+| mt_wifi tuple 补丁 | 固定源码上零 fuzz 应用及 git apply --check 成功 |
+| 用户态回归 | 43 项通过，无跳过 |
+| ARM64 相关内核对象 | 记录器、netdev、skb、GRO、bridge、IPv4 输出、TCP 接收、MediaTek Ethernet、HNAT 全部编译通过 |
+| ARM64 QEMU + KASAN + UBSAN | 18 项 KUnit 全部通过 |
+| QEMU 真实 debugfs/TCP 运行测试 | 64 KiB TCP 收发，32 个记录事件，停止 session 后完整读取 2359392 字节；25 次 quiet 启停成功；capture=2 与非法模式边界通过 |
+| 静态检查 | ShellCheck、Bash/BusyBox ash 语法检查、git diff --check 通过 |
+
+43 项用户态测试包括 7 项控制器、8 项二进制解码、6 项原证据关联、11 项 DSACK 区间覆盖、
+3 项 metadata 变更关联、6 项 PowerShell 流程，以及 2 项实际 C 函数 ASan/UBSan 测试。
+其中私有 Wi-Fi 回调测试分别执行修补前后的真实函数：旧函数会读写模拟本机 skb 的残留 tuple，
+修补后不读不写；真实 ingress 与人工 PPE 回注路径仍正常进入回调流程。
+这是函数逻辑验证，不是完整 mt_wifi 模块或无线硬件模拟。
+
+最终 kernel/overlay 验证树为 `kernel-30d3ad51a5650036`。
+原始 KUnit 和 runtime 日志均未匹配 BUG、WARNING、KASAN、UBSAN、Kernel panic 或 runtime error 诊断。
+
+```text
+/cache/hnat418-debug/tests-20260914-final.log
+/cache/hnat418-debug/objects-20260914-final.log
+/cache/hnat418-debug/kernel-30d3ad51a5650036-objects.log
+/cache/hnat418-debug/kunit-20260914.log
+/cache/hnat418-debug/kernel-30d3ad51a5650036-kunit/test.log
+/cache/hnat418-debug/runtime-20260914.log
+/cache/hnat418-debug/runtime-smoke/qemu.log
+/cache/hnat418-debug/session-20260914-022708.json
+```
+
+本次没有编译完整 OpenWrt 镜像或整个 mt_wifi 模块，没有生成新 sysupgrade 交付文件，
+没有在 RE-CP-03 上运行修补后的新固件。PowerShell 流程测试使用 Linux PowerShell 7.6.6，
+不冒充 Windows 5.1 或客户端网卡实测；QEMU 不模拟 MT7986 PPE/WED/无线固件。
+因此本次验证证明上述源码、生命周期和流程检查通过，不能证明剩余重复接收已在实机消失。
+最终性能和 WAN/LAN/Wi-Fi 功能仍需使用匹配的新固件验收。
+
+## 历史记录：2026-09-13 实机反馈后的来源判定修复
 
 输入和定位见 `results/2026-09-13-provenance-fix.md`。
 本轮实际执行并通过：固定 Linux 6.6.133 上整套补丁零 fuzz 应用检查、28 项用户态回归测试（无跳过）、

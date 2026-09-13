@@ -44,7 +44,7 @@ static struct sk_buff *h418_test_skb(bool down, bool dsack)
 	return skb;
 }
 
-static struct h418_session *h418_test_arm(bool capture)
+static struct h418_session *h418_test_arm(u8 capture)
 {
 	struct h418_session *s = kzalloc(sizeof(*s), GFP_KERNEL);
 	unsigned int cpu;
@@ -52,6 +52,7 @@ static struct h418_session *h418_test_arm(bool capture)
 	if (!s)
 		return NULL;
 	refcount_set(&s->refs, 1);
+	raw_spin_lock_init(&s->freeze_lock);
 	INIT_DELAYED_WORK(&s->freeze_work, h418_freeze_work);
 	s->server = htonl(0xc0a80301);
 	s->peer = htonl(0xc0a80389);
@@ -228,6 +229,69 @@ static void h418_dsack_parser(struct kunit *test)
 	kfree_skb(skb);
 }
 
+static void h418_dsack_validation(struct kunit *test)
+{
+	struct sk_buff *skb = h418_test_skb(false, true);
+	struct h418_packet p;
+	struct h418_record r = {};
+	u32 ranges[][3] = {
+		{101, 101, 101}, /* empty */
+		{100, 90, 101}, /* reversed */
+		{90, 110, 101}, /* crosses cumulative ACK */
+	};
+	unsigned int i;
+
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	for (i = 0; i < ARRAY_SIZE(ranges); i++) {
+		put_unaligned_be32(ranges[i][0], skb->data + 44);
+		put_unaligned_be32(ranges[i][1], skb->data + 48);
+		tcp_hdr(skb)->ack_seq = htonl(ranges[i][2]);
+		KUNIT_ASSERT_TRUE(test, h418_decode(skb, &p));
+		memset(&r, 0, sizeof(r));
+		h418_sack(skb, &p, &r);
+		KUNIT_EXPECT_EQ(test, r.dsack, (u8)0);
+	}
+	put_unaligned_be32(0xfffffff0, skb->data + 44);
+	put_unaligned_be32(0, skb->data + 48);
+	tcp_hdr(skb)->ack_seq = htonl(16);
+	KUNIT_ASSERT_TRUE(test, h418_decode(skb, &p));
+	memset(&r, 0, sizeof(r));
+	h418_sack(skb, &p, &r);
+	KUNIT_EXPECT_EQ(test, r.dsack, (u8)1);
+	tcp_hdr(skb)->ack = 0;
+	KUNIT_ASSERT_TRUE(test, h418_decode(skb, &p));
+	memset(&r, 0, sizeof(r));
+	h418_sack(skb, &p, &r);
+	KUNIT_EXPECT_EQ(test, r.dsack, (u8)0);
+	kfree_skb(skb);
+}
+
+static void h418_nested_dsack(struct kunit *test)
+{
+	struct sk_buff *skb = h418_test_skb(false, true);
+	struct h418_packet p;
+	struct h418_record r = {};
+
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	skb_put_zero(skb, 8);
+	tcp_hdr(skb)->doff = 10;
+	ip_hdr(skb)->tot_len = htons(skb->len);
+	skb->data[43] = 18;
+	put_unaligned_be32(200, skb->data + 44);
+	put_unaligned_be32(210, skb->data + 48);
+	put_unaligned_be32(190, skb->data + 52);
+	put_unaligned_be32(300, skb->data + 56);
+	KUNIT_ASSERT_TRUE(test, h418_decode(skb, &p));
+	h418_sack(skb, &p, &r);
+	KUNIT_EXPECT_EQ(test, r.dsack, (u8)1);
+	put_unaligned_be32(300, skb->data + 52);
+	put_unaligned_be32(190, skb->data + 56);
+	memset(&r, 0, sizeof(r));
+	h418_sack(skb, &p, &r);
+	KUNIT_EXPECT_EQ(test, r.dsack, (u8)0);
+	kfree_skb(skb);
+}
+
 static void h418_malformed_sack(struct kunit *test)
 {
 	struct sk_buff *skb = h418_test_skb(false, true);
@@ -312,6 +376,66 @@ static void h418_automatic_freeze(struct kunit *test)
 	kfree_skb(data);
 }
 
+static void h418_recovery_freeze(struct kunit *test)
+{
+	struct sk_buff *ack = h418_test_skb(false, true);
+	struct sk_buff *data = h418_test_skb(true, false);
+	struct h418_session *s = h418_test_arm(2);
+	int i;
+
+	KUNIT_ASSERT_NOT_NULL(test, ack);
+	KUNIT_ASSERT_NOT_NULL(test, data);
+	KUNIT_ASSERT_NOT_NULL(test, s);
+	for (i = 0; i < 32; i++)
+		__h418_record(ack, H418_TCP_ACK, 1, 0, i);
+	KUNIT_EXPECT_EQ(test, atomic_read(&s->dsacks), 32);
+	KUNIT_EXPECT_EQ(test, atomic_read(&s->trigger_reason), 0);
+	KUNIT_EXPECT_FALSE(test, delayed_work_pending(&s->freeze_work));
+	/* This ordinary ACK carries no SACK: socket recovery still triggers. */
+	tcp_hdr(ack)->doff = 5;
+	__h418_record(ack, H418_TCP_ACK, 32, 0, 32);
+	KUNIT_EXPECT_EQ(test, atomic_read(&s->trigger_reason), 3);
+	flush_delayed_work(&s->freeze_work);
+	KUNIT_EXPECT_TRUE(test, s->frozen);
+	KUNIT_EXPECT_EQ(test, s->freeze_reason, 3U);
+	KUNIT_EXPECT_TRUE(test, h418_hardware_test(data));
+	h418_test_disarm();
+	kfree_skb(ack);
+	kfree_skb(data);
+}
+
+static void h418_reordering_freeze(struct kunit *test)
+{
+	struct sk_buff *ack = h418_test_skb(false, true);
+	struct h418_session *s = h418_test_arm(2);
+
+	KUNIT_ASSERT_NOT_NULL(test, ack);
+	KUNIT_ASSERT_NOT_NULL(test, s);
+	__h418_record(ack, H418_TCP_ACK, 0, 1, 0);
+	flush_delayed_work(&s->freeze_work);
+	KUNIT_EXPECT_EQ(test, s->freeze_reason, 3U);
+	h418_test_disarm();
+	kfree_skb(ack);
+}
+
+static void h418_manual_freeze_immutable(struct kunit *test)
+{
+	struct h418_session *s = h418_test_arm(1);
+	u64 frozen_ns;
+
+	KUNIT_ASSERT_NOT_NULL(test, s);
+	h418_freeze(s, 2);
+	frozen_ns = s->frozen_ns;
+	/* Simulate a writer queueing work after manual freeze publication. */
+	h418_trigger(s, 1);
+	flush_delayed_work(&s->freeze_work);
+	h418_manual_freeze(s);
+	KUNIT_EXPECT_EQ(test, s->freeze_reason, 2U);
+	KUNIT_EXPECT_EQ(test, s->frozen_ns, frozen_ns);
+	KUNIT_EXPECT_FALSE(test, delayed_work_pending(&s->freeze_work));
+	h418_test_disarm();
+}
+
 static void h418_reader_survives_stop(struct kunit *test)
 {
 	struct h418_session *s = h418_test_arm(true);
@@ -345,10 +469,15 @@ static struct kunit_case h418_cases[] = {
 	KUNIT_CASE(h418_early_rx_record),
 	KUNIT_CASE(h418_reject_fragments),
 	KUNIT_CASE(h418_dsack_parser),
+	KUNIT_CASE(h418_dsack_validation),
+	KUNIT_CASE(h418_nested_dsack),
 	KUNIT_CASE(h418_malformed_sack),
 	KUNIT_CASE(h418_quiet_and_scoping),
 	KUNIT_CASE(h418_record_read_only),
 	KUNIT_CASE(h418_automatic_freeze),
+	KUNIT_CASE(h418_recovery_freeze),
+	KUNIT_CASE(h418_reordering_freeze),
+	KUNIT_CASE(h418_manual_freeze_immutable),
 	KUNIT_CASE(h418_reader_survives_stop),
 	KUNIT_CASE(h418_binary_abi),
 	{}

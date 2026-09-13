@@ -29,6 +29,35 @@ function Save-RouterEvidence([string]$Name, [string]$HostCheck = 'yes') {
     Move-Item -LiteralPath $partial -Destination $destination -Force
 }
 
+function Save-ClientNetworkEvidence([string]$Name) {
+    # Read-only, best effort. Unsupported cmdlets must not interrupt tests.
+    # In particular, never disable RSC/offload or restart a network adapter.
+    $lines = @('Captured: ' + (Get-Date -Format o))
+    foreach ($command in @('Get-NetAdapter', 'Get-NetAdapterRsc', 'Get-NetAdapterStatistics')) {
+        $lines += "=== $command ==="
+        try {
+            if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+                $lines += 'Not available on this client.'
+                continue
+            }
+            if ($command -eq 'Get-NetAdapter') {
+                $lines += (& $command -ErrorAction Stop | Select-Object Name,InterfaceDescription,
+                    ifIndex,Status,LinkSpeed,DriverInformation,DriverVersion,DriverDate |
+                    Format-List | Out-String -Width 240)
+            } else {
+                $lines += (& $command -ErrorAction Stop | Format-List * | Out-String -Width 240)
+            }
+        } catch {
+            $lines += $_.Exception.Message
+        }
+    }
+    try {
+        $lines | Set-Content -Encoding UTF8 (Join-Path $output $Name)
+    } catch {
+        Write-Warning ('Client network snapshot could not be saved: ' + $_.Exception.Message)
+    }
+}
+
 if ($DownloadOnly) {
     Write-Host 'Downloading existing evidence only. No router tests or configuration changes will be made.'
     try {
@@ -49,6 +78,7 @@ if (-not (Test-Path -LiteralPath $Iperf -PathType Leaf)) {
 $Iperf = (Resolve-Path -LiteralPath $Iperf).Path
 $ssh = (Get-Command ssh.exe -ErrorAction Stop).Source
 & $Iperf --version | Set-Content -Encoding UTF8 (Join-Path $output 'client-version.txt')
+Save-ClientNetworkEvidence 'client-network-before.txt'
 Write-Host 'Keep this computer on Wi-Fi. Stop other iperf servers/tests.'
 Write-Host 'Confirm the router SSH host fingerprint, then enter the SSH password.'
 Write-Host 'Four single-stream reverse tests run automatically; do not close SSH.'
@@ -109,4 +139,5 @@ try {
 } finally {
     Stop-Job $job -ErrorAction SilentlyContinue
     Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Save-ClientNetworkEvidence 'client-network-after.txt'
 }

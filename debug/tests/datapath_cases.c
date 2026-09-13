@@ -7,24 +7,29 @@ static void provenance_cases(void)
         skb.sport = port;
         metadata_reads = 0;
         assert(!hnat_cpu_has_ingress_port(&skb));
+        assert(!hnat_cpu_has_valid_info(&skb));
         assert(!hnat_cpu_has_ingress_info(&skb));
         assert(!hnat_cpu_from_extge(&skb));
         assert(metadata_reads == 0);
         skb.skb_iif = 4;
         assert(hnat_cpu_has_ingress_port(&skb));
+        assert(hnat_cpu_has_valid_info(&skb));
         assert(hnat_cpu_has_ingress_info(&skb));
         assert(hnat_cpu_from_extge(&skb));
         skb.skb_iif = 0;
     }
     skb.offload_no_fdb = true;
     assert(hnat_cpu_has_ingress_port(&skb));
+    assert(hnat_cpu_has_valid_info(&skb));
     assert(hnat_cpu_has_ingress_info(&skb));
     /* The authoritative return marker blocks injection even after tag loss. */
     skb.tag = skb.extge = false;
     assert(hnat_cpu_has_ingress_port(&skb));
+    assert(!hnat_cpu_has_valid_info(&skb));
     assert(!hnat_cpu_has_ingress_info(&skb));
     skb.data = memory + 2;
     metadata_reads = 0;
+    assert(!hnat_cpu_has_valid_info(&skb));
     assert(!hnat_cpu_has_ingress_info(&skb));
     assert(metadata_reads == 0);
 }

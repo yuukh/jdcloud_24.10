@@ -1,0 +1,3 @@
+# Unified diff context uses a mandatory space before a tab or empty line.
+debug/kernel/*.patch whitespace=-blank-at-eol,-space-before-tab
+debug/mt_wifi/*.patch whitespace=-blank-at-eol,-space-before-tab
