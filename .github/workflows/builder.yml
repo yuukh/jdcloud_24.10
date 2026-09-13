@@ -1,343 +1,63 @@
-#
-# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
-#
-###############手动修改##############
-name: jdcloud_re-cp-03-immortalwrt-24.10
+# Keep the workflow filename already registered on main, so the branch can be
+# selected in the existing Run workflow dropdown without modifying main.
+name: RE-CP-03 HNAT418 diagnostic firmware
 
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
       LAN_IP:
-        description: 'Set LAN IP Address'
+        description: Fresh-install LAN IPv4 (preserved config is not overwritten)
         required: true
-        default: '192.168.1.1'
+        default: '192.168.3.1'
       NO_DOCKERMAN:
-        description: 'Not build luci-app-dockerman'
-        required: true
-        default: false
+        description: Compatibility input from main (debug config remains fixed)
         type: boolean
+        default: false
       SHOW_PATCHED_CODE:
-        description: 'Show final patched code before compile'
-        required: false
-        default: false
+        description: Compatibility input from main (sources are preserved in build artifacts)
         type: boolean
+        default: false
       ssh:
-        description: 'SSH connection to Actions'
-        required: false
+        description: Compatibility input from main (external build SSH is disabled)
         default: 'false'
-#  schedule:
-#    - cron: 0 16 * * *
 
-env:
-  ###############手动修改##############
-  OPENWRT_NAME: immortalwrt
-  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
-  REPO_BRANCH: openwrt-24.10-6.6
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: immortalwrt.config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  SSH_ACTIONS: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
-  TZ: Asia/Shanghai
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
-    permissions:
-      contents: write
-
+    timeout-minutes: 360
     steps:
-    - name: 检查项目分支
-      uses: actions/checkout@main
-
-    - name: 初始化编译环境
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-2004)
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
-
-    - name: 清理磁盘空间(Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        # this might remove tools that are actually needed,
-        # when set to "true" but frees about 6 GB
-        tool-cache: true
-        
-        # all of these default to true, but feel free to set to
-        # "false" if necessary for your workflow
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: true
-        swap-storage: true
-
-    - name: 下载固件源码
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-
-    - name: 加载feeds.conf.default & DIY_P1_SH
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
-
-    - name: 更新 & 安装 feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-
-    - name: 加载config & DIY_P2_SH
-      run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
-
-    - name: 设置LAN IP地址（路由器登录地址）
-      env:
-        SET_IP: ${{ github.event.inputs.LAN_IP || '192.168.1.1' }}
-      run: |
-        cd openwrt
-        if [[ $SET_IP =~ ^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then
-            #修改immortalwrt.lan关联IP
-            find feeds/luci/modules/luci-mod-system -type f -name "flash.js" -exec sed -i "s/192\.168\.[0-9]*\.[0-9]*/$SET_IP/g" {} +
-            #修改默认IP地址
-            sed -i "s/192\.168\.[0-9]*\.[0-9]*/$SET_IP/g" package/base-files/files/bin/config_generate
-            echo "Set LAN IP Address: $SET_IP"
-            echo "IP_ADDR=$SET_IP" >> $GITHUB_ENV
-        else
-            echo "Invalid IP address: $SET_IP"
-            exit 1
-        fi
-
-    - name: 取消编译dockerman
-      if: github.event.inputs.NO_DOCKERMAN == 'true'
-      run: |
-        cd openwrt
-        sed -i '/CONFIG_PACKAGE_luci-app-dockerman=y/d' .config
-
-    - name: SSH链接管理
-      uses: P3TERX/ssh2actions@v1.0.0
-      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
-      env:
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-
-    - name: 下载安装包
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j$(nproc)
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: 显示补丁后的最终代码
-      if: ${{ github.event_name == 'workflow_dispatch' && inputs.SHOW_PATCHED_CODE }}
-      run: |
-        set -euo pipefail
-        cd openwrt
-
-        # Do not call OpenWrt package/*/prepare here: prepare may require host
-        # tools which are only built later by the normal compile stage. Instead,
-        # unpack the already downloaded source archives with the runner's tools
-        # and apply the package patch directories in the same lexical order.
-        PATCH_VIEW_TMP="$(mktemp -d)"
-        trap 'rm -rf "$PATCH_VIEW_TMP"' EXIT
-
-        extract_archive() {
-          local archive="$1"
-          local dest="$2"
-
-          mkdir -p "$dest"
-          case "$archive" in
-            *.tar.gz|*.tgz) tar -xzf "$archive" -C "$dest" ;;
-            *.tar.xz) tar -xJf "$archive" -C "$dest" ;;
-            *.tar.bz2) tar -xjf "$archive" -C "$dest" ;;
-            *.tar.zst|*.tar.zstd) tar --zstd -xf "$archive" -C "$dest" ;;
-            *.tar) tar -xf "$archive" -C "$dest" ;;
-            *)
-              echo "unsupported source archive: $archive" >&2
-              exit 1
-              ;;
-          esac
-        }
-
-        apply_package_patches() {
-          local src_root="$1"
-          local patch_dir="$2"
-          local patch_file
-
-          [ -d "$patch_dir" ] || return 0
-          while IFS= read -r patch_file; do
-            if ! patch --batch --forward --silent -d "$src_root" -p1 < "$patch_file"; then
-              echo "failed to apply package patch: $patch_file" >&2
-              exit 1
-            fi
-          done < <(find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
-        }
-
-        MINIUPNPD_ARCHIVE="$(find dl -maxdepth 1 -type f -name 'miniupnpd-*.tar.*' -print -quit)"
-        FIREWALL4_ARCHIVE="$(find dl -maxdepth 1 -type f -name 'firewall4-*.tar.*' -print -quit)"
-        [ -n "$MINIUPNPD_ARCHIVE" ] || { echo "miniupnpd source archive not found in dl/" >&2; exit 1; }
-        [ -n "$FIREWALL4_ARCHIVE" ] || { echo "firewall4 source archive not found in dl/" >&2; exit 1; }
-
-        extract_archive "$MINIUPNPD_ARCHIVE" "$PATCH_VIEW_TMP/miniupnpd"
-        extract_archive "$FIREWALL4_ARCHIVE" "$PATCH_VIEW_TMP/firewall4"
-
-        MINIUPNPD_SRC="$(find "$PATCH_VIEW_TMP/miniupnpd" -type f -name miniupnpd.c -print -quit)"
-        FIREWALL4_SRC="$(find "$PATCH_VIEW_TMP/firewall4" -type f -path '*/root/sbin/fw4' -print -quit)"
-        [ -n "$MINIUPNPD_SRC" ] || { echo "miniupnpd source not found after extraction" >&2; exit 1; }
-        [ -n "$FIREWALL4_SRC" ] || { echo "firewall4 source not found after extraction" >&2; exit 1; }
-
-        MINIUPNPD_ROOT="$(dirname "$MINIUPNPD_SRC")"
-        FIREWALL4_ROOT="${FIREWALL4_SRC%/root/sbin/fw4}"
-        apply_package_patches "$MINIUPNPD_ROOT" feeds/packages/net/miniupnpd/patches
-        apply_package_patches "$FIREWALL4_ROOT" package/network/config/firewall4/patches
-
-        show_patch_context() {
-          local title="$1"
-          local file="$2"
-          local pattern="$3"
-          local context="${4:-3}"
-          echo
-          echo "===== $title ====="
-          echo "file: $file"
-          grep -n -F -B "$context" -A "$context" -- "$pattern" "$file" || {
-            echo "expected patched content not found: $pattern" >&2
-            exit 1
-          }
-        }
-
-        show_patch_context "miniupnpd: reserved/private IPv4 reconnect" "$MINIUPNPD_SRC" \
-          '(!reserved || GETFLAG(ALLOWPRIVATEIPV4MASK))' 4
-
-        echo
-        echo "===== firewall4: reload-complete event ====="
-        echo "file: $FIREWALL4_SRC"
-        grep -n -E -B 3 -A 3 -- 'notify_reload_done|start "\$1" && notify_reload_done|start && notify_reload_done' "$FIREWALL4_SRC" || {
-          echo "expected firewall4 patched content not found" >&2
-          exit 1
-        }
-
-        show_patch_context "miniupnpd package: firewall resync helper" \
-          feeds/packages/net/miniupnpd/Makefile 'miniupnpd.firewall' 3
-        show_patch_context "miniupnpd init: fw4 debounce trigger" \
-          feeds/packages/net/miniupnpd/files/miniupnpd.init 'firewall.reload.done' 3
-
-        echo
-        echo "===== miniupnpd helper: restore mappings after fw4 rebuild ====="
-        echo "file: feeds/packages/net/miniupnpd/files/miniupnpd.firewall"
-        cat feeds/packages/net/miniupnpd/files/miniupnpd.firewall
-
-        show_patch_context "PR #430: ebtables IPv6 protocol argument" \
-          package/mtk/applications/luci-app-eqos-mtk/root/etc/init.d/dhcp_mark.sh \
-          'ebtables -t nat -A eqos -p ipv6' 3
-
-        echo
-        echo "===== HNAT: cpu_to_ge_bypass cached switch ====="
-        echo "file: target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c"
-        grep -n -F -B 3 -A 3 -- 'cpu_to_ge_bypass' \
-          target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c || {
-          echo "expected HNAT patched content not found" >&2
-          exit 1
-        }
-
-        echo
-        echo "===== HNAT package: default parameter and persistent conffile ====="
-        echo "file: package/kernel/linux/modules/netdevices.mk"
-        grep -n -E -B 3 -A 3 -- 'MODPARAMS\.mtkhnat|mediatek_hnat/conffiles|20-mediatek_hnat' \
-          package/kernel/linux/modules/netdevices.mk || {
-          echo "expected HNAT package patched content not found" >&2
-          exit 1
-        }
-
-    - name: 编译固件
-      id: compile
-      run: |
-        cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) V=s || make -j1 V=s
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*TARGET_.*_(.*)_DEVICE_.*=y/\1/' > TARGET_NAME
-        [ -s TARGET_NAME ] && echo "TARGET_NAME=$(cat TARGET_NAME)" >> $GITHUB_ENV
-        if grep -q 'CONFIG_PACKAGE_luci-app-dockerman=y' .config; then
-                echo "BUILD_DOCKERMAN=-docker" >> $GITHUB_ENV
-        else
-                echo "BUILD_DOCKERMAN=" >> $GITHUB_ENV
-        fi
-        echo "FILE_DATE=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: 查看磁盘使用情况
-      if: (!cancelled())
-      run: df -hT
-
-    - name: 整理文件并重命名
-      id: organize
-      if: success() && env.UPLOAD_FIRMWARE == 'true'
-      run: | 
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        find ./ -iregex ".*\(bl31-uboot.fip\|gpt.bin\|preloader.bin\|bl2.bin\)$" -exec rm -rf {} +
-        sudo -E apt-get -qq install rename
-        rename 's/.*${{ env.DEVICE_NAME }}/${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}/' *
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: 打包上传固件到Actions Artifacts
-      uses: actions/upload-artifact@main
-      if: success() && steps.organize.outputs.status == 'success'
-      with:
-        name: ${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}
-        path: ${{ env.FIRMWARE }}
-
-    - name: 生成固件Release标签
-      id: tag
-      if: success() && env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
-      run: |
-        touch release.txt
-        echo "- 使用源码：${{ env.REPO_URL }}" >> release.txt
-        echo "- 使用分支：${{ env.REPO_BRANCH }}" >> release.txt
-        echo "- 登录地址：${{ env.IP_ADDR }}" >> release.txt
-        if [[ "${{ env.BUILD_DOCKERMAN }}" == '-docker' ]]; then
-                echo "- 已编译luci-app-dockerman" >> release.txt
-        else
-                echo "- 未编译luci-app-dockerman" >> release.txt
-        fi
-        echo "release_tag=${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}" >> $GITHUB_OUTPUT
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: 发布固件至Release
-      uses: softprops/action-gh-release@v2.1.0
-      if: success() && steps.tag.outputs.status == 'success'
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        files: ${{ env.FIRMWARE }}/*
-        name: ${{ env.FILE_DATE }}-${{ env.OPENWRT_NAME }}-${{ env.DEVICE_NAME }}${{ env.BUILD_DOCKERMAN }}
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang flex bison g++ gawk \
+            gcc-multilib gettext git libncurses-dev libssl-dev libelf-dev python3 python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget curl subversion time jq zstd libzstd-dev bzip2
+          sudo mkdir -p /cache/hnat418-firmware
+          sudo chown -R "$USER:$USER" /cache/hnat418-firmware
+      - name: Build the pinned diagnostic firmware
+        env:
+          HNAT418_LAN_IP: ${{ inputs.LAN_IP }}
+          HNAT418_CACHE: /cache/hnat418-firmware
+          JOBS: '4'
+        run: |
+          set -o pipefail
+          bash build-debug.sh 2>&1 | tee /cache/hnat418-firmware/build.log
+      - name: Save firmware, Windows runner and matching kernel build
+        uses: actions/upload-artifact@v4
+        with:
+          name: RE-CP-03-HNAT418-DEBUG
+          path: /cache/hnat418-firmware/delivery/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - name: Save build log even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HNAT418-build-log
+          path: /cache/hnat418-firmware/build.log
+          retention-days: 7

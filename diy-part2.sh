@@ -37,7 +37,9 @@ install -Dm0644 \
 # silently producing a firmware without the requested fixes.
 apply_source_patch "$PATCH_DIR/openwrt/100-miniupnpd-fw4-lifecycle.patch"
 apply_source_patch "$PATCH_DIR/openwrt/110-pr430-fix-ebtables-ipv6.patch"
-apply_source_patch "$PATCH_DIR/openwrt/120-hnat-cpu-to-ge-bypass.patch"
+# The diagnostic candidate keeps the default local bypass but provides a
+# strictly scoped test selector. Do not layer the old broad bypass onto it.
+python3 "$DIY_DIR/debug/install.py" "$PWD"
 
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate

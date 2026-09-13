@@ -1,6 +1,18 @@
-# JDCloud RE-CP-03 ImmortalWrt 24.10 固件构建项目
+# JDCloud RE-CP-03 HNAT418 专用调试固件
 
-[![Build Status](https://github.com/Eivs/jdcloud_re-cp-03-immortalwrt-24.10/actions/workflows/builder.yml/badge.svg)](https://github.com/Eivs/jdcloud_re-cp-03-immortalwrt-24.10/actions/workflows/builder.yml)
+**当前为 `debug_hnat418` 分支，不是 main，也不是已解决 HNAT 问题的稳定发行版。**
+
+完整构建与测试说明见 [debug/README.md](debug/README.md)。GitHub Actions 使用
+**RE-CP-03 HNAT418 diagnostic firmware**，或本地运行 `bash build-debug.sh`。
+所有编译缓存位于 `/cache`。刷入后 Windows 只需把现有 iperf3 放进产物的 `windows` 目录，
+双击 `Run-tests.cmd`，核对 SSH 身份并输入密码，即可自动完成四轮对照及路由器日志下载。
+
+不修改引导程序/分区表，不开机自动测速，不在线卸载 Wi-Fi/以太网模块。
+QEMU 测试不等于 RE-CP-03 实机启动测试；必须保留原固件和已有恢复途径。
+
+---
+
+以下是继承自 main 的硬件与功能说明；其中旧工作流和旧手动构建步骤不适用于本调试分支，应以上面的调试说明为准。
 
 本项目基于 [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt) 框架，专为 **JDCloud RE-CP-03** 路由器构建 ImmortalWrt 24.10 固件。
 

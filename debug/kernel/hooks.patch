@@ -1,0 +1,194 @@
+Subject: [PATCH] net: add bounded HNAT 418 diagnostics and explicit test selector
+
+The candidate datapath is unchanged inside the selected test flow. Other
+local flows keep main's bypass. There is no driver unload, forced module
+load, skb allocation or console output in the observation path.
+
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -1,3 +1,15 @@
+ # SPDX-License-Identifier: GPL-2.0-only
++config HNAT418_DEBUG
++	bool "Bounded HNAT 418 diagnostic recorder"
++	depends on INET && DEBUG_FS
++	help
++	  Root-controlled, IPv4 test-flow-only metadata recording. Disabled
++	  at boot. Includes a bounded flight recorder, not payload capture.
++
++config HNAT418_KUNIT
++	bool "HNAT 418 recorder tests (QEMU only)"
++	depends on HNAT418_DEBUG && KUNIT=y
++	default n
++
+ #
+ # Network configuration
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -43,2 +43,3 @@
+ obj-$(CONFIG_BPF_SYSCALL) += bpf_sk_storage.o
+ obj-$(CONFIG_OF)	+= of_net.o
++obj-$(CONFIG_HNAT418_DEBUG) += hnat418.o
+--- a/net/ipv4/ip_output.c
++++ b/net/ipv4/ip_output.c
+@@ -42,2 +42,3 @@
+ #include <linux/uaccess.h>
++#include <linux/hnat418.h>
+ #include <linux/module.h>
+@@ -119,4 +120,5 @@ int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
+ 	skb->protocol = htons(ETH_P_IP);
++	h418_record(skb, H418_IP_OUT, 0, 0, 0);
+ 
+ 	return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
+ 		       net, sk, skb, NULL, skb_dst(skb)->dev,
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -78,2 +78,3 @@
+ #include <linux/uaccess.h>
++#include <linux/hnat418.h>
+ #include <linux/bitmap.h>
+@@ -3666,3 +3667,4 @@ static int xmit_one(struct sk_buff *skb, struct net_device *dev,
+ 	trace_net_dev_start_xmit(skb, dev);
++	h418_record(skb, H418_DEV_XMIT, dev->ifindex, more, 0);
+ 	rc = netdev_start_xmit(skb, dev, txq, more);
+ 	trace_net_dev_xmit(skb, rc, dev, len);
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -67,2 +67,3 @@
+ #include <linux/types.h>
++#include <linux/hnat418.h>
+ #include <linux/fcntl.h>
+@@ -1716,6 +1717,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
+ 	enum skb_drop_reason reason;
+ 	struct sock *rsk;
+ 
++	h418_record(skb, H418_TCP_ACK, 0, 0, 0);
+ 	if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
+ 		struct dst_entry *dst;
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -15,2 +15,3 @@
+ #include <linux/of.h>
++#include <linux/hnat418.h>
+ #include <linux/of_mdio.h>
+@@ -1697,4 +1698,6 @@ static void mtk_tx_unmap(struct mtk_eth *eth, struct mtk_tx_buf *tx_buf,
+ 			struct sk_buff *skb = tx_buf->data;
+ 
++			h418_record(skb, H418_DMA_RELEASE, tx_buf->mac_id,
++				    tx_buf->flags, napi);
+ 			if (napi)
+ 				napi_consume_skb(skb, napi);
+@@ -1959,6 +1962,11 @@ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+ 	netdev_tx_sent_queue(txq, skb->len);
+ 	skb_tx_timestamp(skb);
+ 
++	h418_record(skb, H418_QDMA_MAP,
++		    txd_to_idx(ring, itxd, soc->tx.desc_size),
++		    (n_desc << 16) | txd_to_idx(ring, txd, soc->tx.desc_size),
++		    itxd->txd4);
++
+ 	ring->next_free = mtk_qdma_phys_to_virt(ring, txd->txd2);
+ 	atomic_sub(n_desc, &ring->free_count);
+ 
+@@ -2090,3 +2098,5 @@ static netdev_tx_t mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ 	if (unlikely(atomic_read(&ring->free_count) <= tx_num)) {
++		h418_record(skb, H418_QDMA_BUSY,
++			    atomic_read(&ring->free_count), tx_num, 0);
+ 		netif_tx_stop_all_queues(dev);
+ 		netif_err(eth, tx_queued, dev,
+@@ -2140,3 +2150,4 @@ static netdev_tx_t mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ 		    mtk_tx_map(skb, dev, tx_num, ring, gso) < 0) {
++				h418_record(skb, H418_QDMA_ERROR, tx_num, 0, 0);
+ 				stats->tx_dropped++;
+ 				dev_kfree_skb_any(skb);
+@@ -2685,3 +2696,5 @@ static int mtk_poll_rx(struct napi_struct *napi, int budget,
+ 		skb_record_rx_queue(skb, 0);
++		h418_record(skb, H418_PPE_RX, reason, hash,
++			    mtk_is_netsys_v3_or_greater(eth) ? trxd.rxd5 : trxd.rxd4);
+ 		napi_gro_receive(napi, skb);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+@@ -14,4 +14,6 @@
+ #include <linux/netfilter_bridge.h>
+ #include <linux/netfilter_ipv6.h>
++#include <linux/hnat418.h>
++#include <linux/module.h>
+ 
+ #include <linux/of.h>
+@@ -36,6 +38,13 @@
+ extern atomic_t eth1_in_br;
+ struct net_device *br_dev;
+ struct net_device *eth1_dev;
++
++/* Accept the autoload option retained by config-preserving main upgrades.
++ * The diagnostic selector is the only override; non-test local flows bypass.
++ */
++static bool cpu_to_ge_bypass = true;
++module_param(cpu_to_ge_bypass, bool, 0444);
++MODULE_PARM_DESC(cpu_to_ge_bypass, "Compatibility default; hnat418 controls only its test flow");
+ #define do_ge2ext_fast(dev, skb)                                               \
+ 	(skb_hnat_is_hashed(skb) && !is_from_extge(skb) && \
+ 	 skb_hnat_reason(skb) == HIT_BIND_FORCE_TO_CPU)
+@@ -1977,3 +1978,5 @@ int mtk_sw_nat_hook_tx(struct sk_buff *skb, int gmac_no)
+ 	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
++	h418_record(skb, H418_WIFI_BIND, gmac_no,
++		    skb_hnat_entry(skb), READ_ONCE(*(u32 *)entry));
+ 	
+ 	if (entry_hnat_is_bound(entry))
+@@ -2133,4 +2136,6 @@ int mtk_sw_nat_hook_tx(struct sk_buff *skb, int gmac_no)
+ 	dma_wmb();
+ 	spin_unlock(&hnat_priv->entry_lock);
++	h418_record(skb, H418_WIFI_BIND, gmac_no | BIT(31),
++		    skb_hnat_entry(skb), READ_ONCE(*(u32 *)entry));
+ 	return NF_ACCEPT;
+ }
+@@ -2326,3 +2331,5 @@ static unsigned int mtk_hnat_nf_post_routing(
+ 	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
++	h418_record(skb, H418_FOE_LOOKUP, skb_hnat_reason(skb),
++		    skb_hnat_entry(skb), READ_ONCE(*(u32 *)entry));
+ 
+ 	switch (skb_hnat_reason(skb)) {
+@@ -2682,4 +2689,6 @@ mtk_hnat_br_nf_local_out(void *priv, struct sk_buff *skb,
++	h418_record(skb, H418_BR_DECISION, is_from_extge(skb),
++		    hnat_cpu_has_ingress_info(skb), state->out->ifindex);
+ 	if ((!strncmp(state->out->name, "ra0", 3) ||
+ 	     !strncmp(state->out->name, "rax0", 4)) &&
+ 	    !is_from_extge(skb) && !hnat_cpu_has_ingress_info(skb)) {
+ 		return do_hnat_cpu_to_ge(skb);
+--- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
+@@ -56,6 +56,13 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
+ 	unsigned int headroom = FOE_INFO_LEN + ETH_HLEN;
+ 	bool tagged = skb_vlan_tag_present(skb);
+ 
++	if (!h418_hardware_test(skb)) {
++		h418_record(skb, H418_CPU_PREP, 1, 0, 0);
++		return NF_ACCEPT;
++	}
++	h418_record(skb, H418_CPU_PREP, 0, hnat_cpu_packet_supported(skb),
++		    dev ? dev->ifindex : 0);
++
+ 	if (skb->mark == HNAT_EXCEPTION_TAG || !dev ||
+ 	    !(READ_ONCE(dev->flags) & IFF_UP) ||
+ 	    !hnat_cpu_packet_supported(skb))
+@@ -74,3 +81,5 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
+-	if (skb_cow(skb, headroom))
++	if (skb_cow(skb, headroom)) {
++		h418_record(skb, H418_PREP_DROP, 1, 0, 0);
+ 		return NF_DROP;
++	}
+ 
+@@ -85,4 +94,6 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
+ 		if (__vlan_insert_tag(skb, skb->vlan_proto,
+-				      skb_vlan_tag_get(skb)))
++				      skb_vlan_tag_get(skb))) {
++			h418_record(skb, H418_PREP_DROP, 2, 0, 0);
+ 			return NF_DROP;
++		}
+ 		skb->protocol = skb->vlan_proto;
+@@ -95,3 +106,4 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
+ 	skb->dev = dev;
++	h418_record(skb, H418_CPU_INJECT, 0, 0, 0);
+ 	dev_queue_xmit(skb);
+ 	return NF_STOLEN;

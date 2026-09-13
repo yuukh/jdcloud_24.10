@@ -1,0 +1,235 @@
+#!/bin/sh
+# One authenticated SSH invocation orchestrates four Windows/router tests.
+# Not enabled at boot. No firmware, module, netdev or persistent UCI changes.
+set -eu
+umask 077
+
+BASE=/overlay/hnat418-debug
+DEBUG=/sys/kernel/debug/hnat418
+LOCK=/var/run/hnat418.lock
+NFT_TABLE=hnat418_diagnostic
+# Use exact package executables even when ash prefers its BusyBox applets.
+ip() { /usr/libexec/ip-full "$@"; }
+timeout() { /usr/libexec/timeout-coreutils "$@"; }
+SERVER_PID=
+SAMPLER_PID=
+FIREWALL_CREATED=0
+OWN_LOCK=0
+ARMED=0
+RUN=
+dir=
+
+prune_runs() {
+    kept=0
+    # Only names created by this controller, within its private fixed directory.
+    for old in $(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | sort -r); do
+        case "${old##*/}" in run-????????T??????Z-[0-9]*) ;; *) continue;; esac
+        kept=$((kept + 1))
+        [ "$kept" -le 2 ] || rm -rf -- "$old"
+    done
+}
+pack_run() {
+    [ -n "$RUN" ] || return 0
+    [ -d "$RUN" ] || return 0
+    # Replacing the latest link is atomic; an interrupted gzip cannot corrupt
+    # the previously completed archive. Preserve raw data on any pack failure.
+    if tar -C "$BASE" -czf "$BASE/latest.tar.gz.part" "${RUN##*/}" &&
+       mv "$BASE/latest.tar.gz.part" "$BASE/latest.tar.gz" &&
+       chmod 600 "$BASE/latest.tar.gz"; then
+        printf 'HNAT418 ARCHIVE %s/latest.tar.gz\n' "$BASE"
+    else
+        rm -f "$BASE/latest.tar.gz.part"
+        return 1
+    fi
+}
+
+fail() { printf 'HNAT418 ERROR: %s\n' "$*" >&2; exit 1; }
+ipv4() {
+    printf '%s\n' "$1" | awk -F. '
+      NF != 4 { exit 1 }
+      { for (i=1;i<=4;i++) if ($i !~ /^[0-9]+$/ || length($i)>3 || $i>255) exit 1 }
+    '
+}
+stop_child() {
+    if [ -n "$1" ]; then
+        kill -TERM "$1" 2>/dev/null || true
+        wait "$1" 2>/dev/null || true
+    fi
+}
+cleanup() {
+    code=$?
+    trap - EXIT INT TERM HUP
+    stop_child "$SERVER_PID"
+    stop_child "$SAMPLER_PID"
+    if [ "$ARMED" = 1 ]; then
+        # Stop the sender first. Never change mode halfway through a live test.
+        printf 'freeze\n' > "$DEBUG/control" 2>/dev/null || true
+        if [ -n "$dir" ]; then
+            cat "$DEBUG/status" > "$dir/interrupted-status.txt" 2>/dev/null || true
+            if [ ! -e "$dir/records.bin" ]; then
+                if cat "$DEBUG/records" > "$dir/records.bin.part" 2>/dev/null; then
+                    mv "$dir/records.bin.part" "$dir/records.bin"
+                else
+                    rm -f "$dir/records.bin.part"
+                fi
+            fi
+        fi
+        printf 'stop\n' > "$DEBUG/control" 2>/dev/null || true
+    fi
+    if [ "$FIREWALL_CREATED" = 1 ]; then
+        nft delete table inet "$NFT_TABLE" 2>/dev/null || true
+    fi
+    if [ "$code" != 0 ]; then
+        if [ -n "$RUN" ]; then
+            printf 'controller_exit=%s\n' "$code" >> "$RUN/session.txt"
+            pack_run || true
+            prune_runs || true
+        fi
+        printf 'HNAT418 stopped safely; partial evidence: %s\n' "$RUN" >&2
+    fi
+    if [ "$OWN_LOCK" = 1 ]; then
+        rmdir "$LOCK" 2>/dev/null || true
+    fi
+    exit "$code"
+}
+
+[ "$#" = 0 ] || fail 'No positional arguments are accepted.'
+[ "$(id -u)" = 0 ] || fail 'Run as root through SSH.'
+[ -n "${SSH_CONNECTION:-}" ] || fail 'Start through SSH from the Windows test computer.'
+if [ ! -x /usr/libexec/ip-full ] || [ ! -x /usr/libexec/timeout-coreutils ]; then
+    fail 'Firmware requires ip-full and coreutils-timeout, not BusyBox substitutes.'
+fi
+# sshd supplies four numeric fields; no eval, and both addresses are validated.
+read -r PEER _PEER_PORT SERVER _SSH_PORT <<EOF
+$SSH_CONNECTION
+EOF
+if ! ipv4 "$PEER" || ! ipv4 "$SERVER"; then
+    fail 'This release requires an IPv4 SSH connection.'
+fi
+[ "$PEER" != "$SERVER" ] || fail 'Client and server must differ.'
+ip -4 -o address show dev br-lan | awk -v ip="$SERVER" '
+  { split($4,a,"/"); if (a[1] == ip) found=1 } END { exit !found }
+' || fail 'SSH must connect to the router br-lan IPv4 address.'
+ip -4 route get "$PEER" | grep -q ' dev br-lan ' || fail 'The test computer must be on the LAN.'
+for tool in iperf3 ss ip tc ethtool nft timeout tar gzip; do
+    command -v "$tool" >/dev/null 2>&1 || fail "Required firmware tool missing: $tool"
+done
+if [ ! -e "$DEBUG/control" ] && ! grep -qs ' /sys/kernel/debug ' /proc/mounts; then
+    mount -t debugfs -o nosuid,nodev,noexec debugfs /sys/kernel/debug ||
+        fail 'Cannot mount the diagnostic filesystem.'
+fi
+if [ ! -w "$DEBUG/control" ] || [ ! -r "$DEBUG/status" ]; then
+    fail 'Diagnostic kernel or debugfs unavailable.'
+fi
+[ -d /sys/module/mtkhnat ] || fail 'HNAT module is not loaded; preserve boot logs instead of running a misleading hardware test.'
+timeout --help 2>&1 | grep -q -- '--kill-after' || fail 'GNU coreutils timeout is required.'
+grep -q '^active=0$' "$DEBUG/status" || fail 'A diagnostic session is already armed; do not replace a running session.'
+[ -d /overlay ] || fail 'Persistent overlay unavailable.'
+[ ! -L "$BASE" ] || fail 'Refusing a symlink for diagnostic storage.'
+mkdir -p "$BASE"
+chmod 700 "$BASE"
+# Keep a safety margin even before snapshots, samples and final archive coexist.
+free_kb=$(df -Pk "$BASE" | awk 'END {print $4}')
+case "$free_kb" in ''|*[!0-9]*) fail 'Cannot determine free space.';; esac
+[ "$free_kb" -ge 131072 ] || fail 'At least 128 MiB free overlay space is required.'
+available_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+case "$available_kb" in ''|*[!0-9]*) fail 'Cannot determine available RAM.';; esac
+[ "$available_kb" -ge 98304 ] || fail 'At least 96 MiB available RAM is required.'
+mkdir "$LOCK" 2>/dev/null || fail 'Another diagnostic controller is running (lock exists).'
+OWN_LOCK=1
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+nft list table inet "$NFT_TABLE" >/dev/null 2>&1 && fail 'Reserved diagnostic firewall table already exists.'
+RUN="$BASE/run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir "$RUN"
+printf 'peer=%s server=%s\n' "$PEER" "$SERVER" > "$RUN/session.txt"
+printf 'This directory is private and includes test addresses and recent router logs.\n' >> "$RUN/session.txt"
+
+# Only test ports are affected. No global flush or modification to fw4's tables.
+# A WAN-arriving packet or a different LAN client cannot use the temporary server.
+nft -f - <<EOF
+table inet $NFT_TABLE {
+ chain input {
+  type filter hook input priority -10; policy accept;
+  ip daddr $SERVER tcp dport 5201-5204 iifname != "br-lan" reject
+  ip daddr $SERVER tcp dport 5201-5204 ip saddr != $PEER reject
+ }
+}
+EOF
+FIREWALL_CREATED=1
+
+sample() {
+    sample_number=0
+    while [ "$sample_number" -lt 170 ]; do
+        printf '\n=== sample=%s port=%s ===\n' "$sample_number" "$1"
+        cat /proc/uptime "$DEBUG/status"
+        cat /proc/net/snmp /proc/net/netstat /proc/net/dev /proc/net/softnet_stat
+        grep -E '^(cpu|procs_)' /proc/stat
+        ss -tinm state established "( sport = :$1 )"
+        if [ $((sample_number % 5)) = 0 ]; then
+            for dev in eth0 rax0; do
+                [ ! -d "/sys/class/net/$dev" ] || tc -s qdisc show dev "$dev"
+            done
+        fi
+        sample_number=$((sample_number + 1))
+        sleep 1
+    done
+}
+
+run_one() {
+    port=$1 hardware=$2 capture=$3 label=$4
+    dir="$RUN/$label"
+    mkdir "$dir"
+    /usr/sbin/hnat418-snapshot > "$dir/before.txt" 2>&1
+    # A new port is used for every round; no established flow changes mode.
+    printf 'arm %s %s %s %s %s 180\n' "$SERVER" "$PEER" "$port" "$hardware" "$capture" > "$DEBUG/control"
+    ARMED=1
+    cat "$DEBUG/status" > "$dir/armed.txt"
+    sample "$port" > "$dir/timeline.txt" 2>&1 &
+    SAMPLER_PID=$!
+    printf 'HNAT418 READY %s port=%s hardware=%s capture=%s\n' "$label" "$port" "$hardware" "$capture"
+    # timeout owns only this child. No killall/rmmod/reset is used anywhere.
+    timeout --kill-after=5 --signal=TERM 160 iperf3 -s -1 -4 -B "$SERVER" -p "$port" -J > "$dir/iperf-server.json" 2> "$dir/iperf-server.stderr" &
+    SERVER_PID=$!
+    result=0
+    wait "$SERVER_PID" || result=$?
+    SERVER_PID=
+    sampler_result=0
+    if kill -0 "$SAMPLER_PID" 2>/dev/null; then
+        stop_child "$SAMPLER_PID"
+    else
+        wait "$SAMPLER_PID" || sampler_result=$?
+    fi
+    SAMPLER_PID=
+    printf 'freeze\n' > "$DEBUG/control"
+    cat "$DEBUG/status" > "$dir/final-status.txt"
+    if [ "$capture" = 1 ]; then
+        cat "$DEBUG/records" > "$dir/records.bin.part"
+        mv "$dir/records.bin.part" "$dir/records.bin"
+    fi
+    printf 'stop\n' > "$DEBUG/control"
+    ARMED=0
+    /usr/sbin/hnat418-snapshot > "$dir/after.txt" 2>&1
+    printf 'iperf_exit=%s\n' "$result" > "$dir/result.txt"
+    printf 'sampler_exit=%s\n' "$sampler_result" >> "$dir/result.txt"
+    printf 'HNAT418 ROUND_END %s exit=%s\n' "$label" "$result"
+    # Do not silently continue a failed/timeout session as a passing A/B test.
+    [ "$result" = 0 ] || fail "Round $label failed; its partial logs are retained."
+    [ "$sampler_result" = 0 ] || fail "Round $label sampler failed; refusing an incomplete success report."
+    used_kb=$(du -sk "$RUN" | awk '{print $1}')
+    [ "$used_kb" -lt 65536 ] || fail 'Per-run evidence limit reached; refusing more writes.'
+}
+
+run_one 5201 1 1 hardware-a
+run_one 5202 0 1 bypass
+run_one 5203 1 0 hardware-quiet
+run_one 5204 1 1 hardware-b
+
+nft delete table inet "$NFT_TABLE"
+FIREWALL_CREATED=0
+printf 'All rounds completed. A trace window is not the entire 60-second test.\n' >> "$RUN/session.txt"
+pack_run
+prune_runs
+printf 'HNAT418 DONE %s/latest.tar.gz\n' "$BASE"

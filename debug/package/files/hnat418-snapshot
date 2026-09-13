@@ -1,0 +1,35 @@
+#!/bin/sh
+# Read-only, bounded system metadata. No UCI credentials or payloads.
+set -u
+ip() { /usr/libexec/ip-full "$@"; }
+timeout() { /usr/libexec/timeout-coreutils "$@"; }
+printf '\n=== time ===\n'
+date -u
+cat /proc/uptime
+printf '\n=== build ===\n'
+uname -a
+cat /usr/share/hnat418/build-manifest.txt
+printf '\n=== modules ===\n'
+cat /proc/modules
+printf '\n=== board ===\n'
+ubus call system board
+printf '\n=== network ===\n'
+ip -o link show
+for dev in eth0 eth1 ra0 rax0 br-lan; do
+    [ -d "/sys/class/net/$dev" ] || continue
+    printf '\n=== %s ===\n' "$dev"
+    timeout 4 ethtool -k "$dev" 2>&1
+    timeout 4 ethtool -S "$dev" 2>&1
+    timeout 4 tc -s qdisc show dev "$dev" 2>&1
+done
+printf '\n=== kernel-config ===\n'
+if [ -r /proc/config.gz ]; then
+    zcat /proc/config.gz | grep -E 'CONFIG_(HNAT418|NET_MEDIATEK|MEDIATEK_NETSYS|DEBUG_FS|KPROBES|FTRACE|TRACING|MODULE|MODVERSIONS|KALLSYMS|IKCONFIG|NET_SCH)'
+fi
+printf '\n=== kernel-log-tail ===\n'
+dmesg | tail -n 250
+printf '\n=== recent-system-log ===\n'
+logread | tail -n 150
+printf '\n=== memory ===\n'
+cat /proc/meminfo
+exit 0
