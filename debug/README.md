@@ -1,9 +1,18 @@
 # RE-CP-03 / MT7986 HNAT418 调试固件
 
-这是 `debug_hnat418` 分支上的**完整固件构建方案**，不是最终修复固件。
+这是 `debug_hnat418` 分支上的**完整固件构建方案**，包含已确认来源判定缺陷的修复，仍需新固件实机验收。
 目标是定位此前抓包中的“批次迟到后触发重传”和“完整 IP 报文重复交付”。
 保留 main 的设备配置、分区、Wi-Fi 驱动及 miniupnpd/firewall 修复；不修改引导程序或分区表。
 核心基线固定为 `padavanonly/immortalwrt-mt798x-6.6@ec9ef10efc65da1e6d1de4e2c043c0e13d08eed8`，内核 6.6.133。
+
+## 2026-09-13 实机反馈后的修复
+
+`results-20260913-233641` 证实：部分本机报文因残留 HNAT metadata 被错误地当成入站报文，
+同一连接因而混用 PPE 与直接无线发送。现在用 `skb_iif` / `offload_no_fdb` 判断真实入站来源，
+不再用旧 headroom/cb magic 决定本机注入资格；真实回流仍禁止再次注入。
+同时修复早期 PPE_RX 尚未初始化 network_header 时的只读解析，并补齐日志回收入口。
+证据、边界和复现命令见 [本轮分析报告](results/2026-09-13-provenance-fix.md)。
+绕过轮仍存在重传，不能据此声称所有无线重复交付已被一个补丁根治。
 
 ## 编译
 
@@ -53,6 +62,10 @@ Windows 只负责发起测试和下载；关键路径、ACK/SACK、系统状态�
 中途失败尽量自动下载 `router-partial-evidence.tar.gz`；即使 SSH 中断，原始文件保留在路由器 `/overlay/hnat418-debug/run-*`，最新成功打包文件是 `/overlay/hnat418-debug/latest.tar.gz`。
 请整体提供该结果目录，不必再次单独抄写 iperf 输出。原始日志包括测试地址及最近系统日志，请勿直接公开发布。
 
+只补下载已有日志时，双击 **Download-logs.cmd**；不需要 iperf、不运行测速、不修改路由器配置。
+它下载路由器当前的 `latest.tar.gz`，不保证这个文件仍属于更早一次测试，请避免先重跑覆盖证据。
+下载失败的文件保持 `.part` 后缀，错误记录在 `runner-error.txt`，不会冒充下载成功。
+
 ## 正常运行时不会自动测速
 
 没有开机测速服务、没有常驻 iperf 监听器。静态记录开关默认关闭。
@@ -93,6 +106,7 @@ skb 匿名 cookie 可能复用/碰撞，不能只按 cookie 关联，应合并�
 ## 验证与后续模块迭代
 
 ```sh
+python3 debug/validate.py check
 python3 debug/validate.py objects --jobs 6
 python3 debug/validate.py kunit --jobs 6
 python3 -m unittest discover -s debug/tests -p 'test_*.py' -v

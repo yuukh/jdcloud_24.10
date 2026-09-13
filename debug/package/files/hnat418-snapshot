@@ -32,4 +32,6 @@ printf '\n=== recent-system-log ===\n'
 logread | tail -n 150
 printf '\n=== memory ===\n'
 cat /proc/meminfo
+printf '\n=== tcp-counters ===\n'
+cat /proc/net/snmp /proc/net/netstat
 exit 0

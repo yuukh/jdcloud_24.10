@@ -22,7 +22,10 @@ name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with (root/'calls.log').open('a') as out:
     out.write(json.dumps([name, args])+'\n')
-if name == 'ip':
+if name == 'id':
+    # The production controller requires root; this fixture never does.
+    print('0')
+elif name == 'ip':
     if 'address' in args:
         print('1: br-lan inet 192.168.3.1/24 scope global br-lan')
     elif 'route' in args:
@@ -61,7 +64,7 @@ class ControllerTests(unittest.TestCase):
         (self.root / 'debug/status').write_text('active=0\n')
         (self.root / 'debug/control').write_text('')
         (self.root / 'debug/records').write_bytes(b'FAKE RECORD FOR SHELL TEST ONLY')
-        for name in ('ip', 'nft', 'iperf3', 'df', 'ss', 'tc', 'ethtool', 'snapshot'):
+        for name in ('id', 'ip', 'nft', 'iperf3', 'df', 'ss', 'tc', 'ethtool', 'snapshot'):
             path = self.root / 'bin' / name
             path.write_text(MOCK)
             path.chmod(0o755)
@@ -77,7 +80,7 @@ class ControllerTests(unittest.TestCase):
         # Standalone BusyBox ash deliberately ignores PATH for built-in applets.
         # Shell functions redirect just the fixture commands, not production code.
         wrappers = '\n'.join(name + '() { "' + str(self.root / 'bin' / name) + '" "$@"; }'
-                             for name in ('df', 'nft', 'iperf3', 'ss', 'tc', 'ethtool'))
+                             for name in ('id', 'df', 'nft', 'iperf3', 'ss', 'tc', 'ethtool'))
         text = wrappers + '\n' + text
         self.script = self.root / 'controller'
         self.script.write_text(text)

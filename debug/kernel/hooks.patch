@@ -149,13 +149,11 @@ load, skb allocation or console output in the observation path.
 +		    skb_hnat_entry(skb), READ_ONCE(*(u32 *)entry));
  
  	switch (skb_hnat_reason(skb)) {
-@@ -2682,4 +2689,6 @@ mtk_hnat_br_nf_local_out(void *priv, struct sk_buff *skb,
-+	h418_record(skb, H418_BR_DECISION, is_from_extge(skb),
+@@ -2682,2 +2689,4 @@ mtk_hnat_br_nf_local_out(void *priv, struct sk_buff *skb,
++	h418_record(skb, H418_BR_DECISION, hnat_cpu_from_extge(skb),
 +		    hnat_cpu_has_ingress_info(skb), state->out->ifindex);
  	if ((!strncmp(state->out->name, "ra0", 3) ||
  	     !strncmp(state->out->name, "rax0", 4)) &&
- 	    !is_from_extge(skb) && !hnat_cpu_has_ingress_info(skb)) {
- 		return do_hnat_cpu_to_ge(skb);
 --- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
 +++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
 @@ -56,6 +56,13 @@ static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)

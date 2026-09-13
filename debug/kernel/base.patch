@@ -1,13 +1,29 @@
 --- /dev/null
 +++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,115 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef MTK_HNAT_CPU_H
 +#define MTK_HNAT_CPU_H
 +
++/* Packet memory is recycled: a valid tag in skb->head (or cb[44])
++ * is not proof of ingress. RX supplies skb_iif; artificial PPE return
++ * additionally carries offload_no_fdb. Never consult stale headroom
++ * to decide whether a locally generated packet should use the PPE.
++ */
++static bool hnat_cpu_has_ingress_port(const struct sk_buff *skb)
++{
++	return skb->skb_iif || skb->offload_no_fdb;
++}
++
++static bool hnat_cpu_from_extge(const struct sk_buff *skb)
++{
++	return hnat_cpu_has_ingress_port(skb) && is_from_extge(skb);
++}
++
 +static bool hnat_cpu_has_ingress_info(const struct sk_buff *skb)
 +{
-+	if (!IS_SPACE_AVAILABLE_HEAD(skb) || !is_magic_tag_valid(skb))
++	if (!hnat_cpu_has_ingress_port(skb) ||
++	    !IS_SPACE_AVAILABLE_HEAD(skb) || !is_magic_tag_valid(skb))
 +		return false;
 +
 +	return FROM_GE_PPD(skb) || FROM_GE_LAN(skb) || FROM_GE_WAN(skb) ||
@@ -279,7 +295,7 @@
 +-        }
 ++	if ((!strncmp(state->out->name, "ra0", 3) ||
 ++	     !strncmp(state->out->name, "rax0", 4)) &&
-++	    !is_from_extge(skb) && !hnat_cpu_has_ingress_info(skb)) {
+++	    !hnat_cpu_has_ingress_port(skb)) {
 ++		return do_hnat_cpu_to_ge(skb);
 ++	}
 + 	if (!mtk_hnat_nf_post_routing(skb, state->out, 0, __func__ ,false))

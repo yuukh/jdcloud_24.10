@@ -1,6 +1,21 @@
-# 本次验证记录（2026-09-13）
+# 验证记录（2026-09-13）
 
-## 已完成
+## 本轮：实机反馈后的来源判定修复
+
+输入和定位见 `results/2026-09-13-provenance-fix.md`。
+本轮实际执行并通过：固定 Linux 6.6.133 上整套补丁零 fuzz 应用检查、28 项用户态回归测试（无跳过）、
+ShellCheck 和 `git diff --check`。
+28 项包括 7 项控制器、8 项二进制解析、6 项证据关联、6 项 PowerShell 流程，
+以及 1 项从实际源码提取 C 辅助函数的 ASan/UBSan 测试（内部覆盖多种来源/偏移/截断/VLAN 情况）。
+PowerShell 模拟运行环境为 Linux PowerShell 7.6.6，不能冒充真实 Windows 5.1 实测。
+
+新增三项早期 RX KUnit 测试代码，但本轮没有重新构建/运行 QEMU 测试内核；
+没有重启本地 OpenWrt 整机编译。下面的对象编译和 QEMU 记录属于首版，**不代表新补丁已经完成这些验证**。
+新固件编译交给 GitHub Actions；最终启动、硬件路径和性能还要由新镜像实机测试确认。
+
+## 首版诊断固件的历史验证（本轮修改之前）
+
+### 当时已完成
 
 - 原版源码工作区保持干净，基线固定 `ec9ef10efc65da1e6d1de4e2c043c0e13d08eed8`。
 - `debug/kernel/base.patch` 与此前实机使用的候选补丁逐字节一致，SHA-256：`66496f070909a64dce25ab9c1bffca9221e2d967c9fac40d42faf6d7b17d4e9c`。
@@ -14,7 +29,7 @@
 - ShellCheck、Bash/BusyBox ash 语法检查通过。
 - 干净 OpenWrt 构建树的 feeds 准备、main 其他补丁、诊断覆盖、`make defconfig` 成功。确认 RE-CP-03 profile、HNAT、hnat418-debug、iperf3、ip-full、ss、nftables-json、coreutils-timeout、SFTP 服务端全部选中，DEBUG_FS / HNAT418_DEBUG / IKCONFIG_PROC 已配置。
 
-## 日志与构建位置
+### 首版日志与构建位置
 
 ```text
 /cache/hnat418-debug/kernel-f73682fa75d0c058-objects.log
@@ -30,7 +45,7 @@
 嵌套候选补丁的 context 行导致 Git whitespace 提示，这是补丁文件的上下文表示；基础补丁保留原 SHA-256，没有改写或“自动修正”它。
 feeds 有一个未选中 `luci-app-radicale3` 的缺失依赖警告，未影响诊断包与目标配置展开；不把配置准备等同于全固件编译成功。
 
-## 明确未完成的验收
+### 首版记录时尚未完成的验收
 
 本次没有编译整个 OpenWrt 世界并生成可刷写 sysupgrade 镜像，没有在 RE-CP-03 实机上启动这版新内核，没有验证真实 Windows SSH 交互或无线硬件流控。
 完整固件由用户通过已提供的脚本/Actions 编译；最终导出会再次检查诊断内核配置与关键匹配构建产物。

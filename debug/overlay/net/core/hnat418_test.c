@@ -120,6 +120,77 @@ static void h418_reject_truncated(struct kunit *test)
 	kfree_skb(skb);
 }
 
+static void h418_early_rx_offsets(struct kunit *test)
+{
+	struct sk_buff *skb = h418_test_skb(true, false);
+	struct h418_packet p;
+	u8 before[72];
+
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	memset(skb->head, 0xa5, skb_headroom(skb));
+	skb->network_header = 0; /* Driver has not handed this skb to GRO. */
+	memcpy(before, skb->data, sizeof(before));
+	KUNIT_EXPECT_FALSE(test, h418_decode(skb, &p));
+	KUNIT_ASSERT_TRUE(test, h418_decode_rx(skb, &p));
+	KUNIT_EXPECT_EQ(test, p.netoff, 0);
+	KUNIT_EXPECT_EQ(test, ntohl(p.tcp.seq), 1001U);
+	KUNIT_EXPECT_EQ(test, skb->network_header, (u16)0);
+	KUNIT_EXPECT_EQ(test, memcmp(before, skb->data, sizeof(before)), 0);
+	kfree_skb(skb);
+}
+
+static void h418_early_rx_vlan(struct kunit *test)
+{
+	struct sk_buff *skb = h418_test_skb(true, false);
+	struct h418_packet p;
+	struct vlan_hdr *vlan;
+	int depth;
+
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	skb->network_header = 0;
+	for (depth = 1; depth <= 3; depth++) {
+		vlan = (struct vlan_hdr *)skb_push(skb, VLAN_HLEN);
+		vlan->h_vlan_TCI = htons(1234);
+		vlan->h_vlan_encapsulated_proto = skb->protocol;
+		skb->protocol = htons(ETH_P_8021Q);
+		if (depth <= 2) {
+			KUNIT_EXPECT_TRUE(test, h418_decode_rx(skb, &p));
+			KUNIT_EXPECT_EQ(test, p.netoff, depth * VLAN_HLEN);
+		} else {
+			KUNIT_EXPECT_FALSE(test, h418_decode_rx(skb, &p));
+		}
+	}
+	skb_trim(skb, 2);
+	KUNIT_EXPECT_FALSE(test, h418_decode_rx(skb, &p));
+	KUNIT_EXPECT_FALSE(test, h418_decode_rx(NULL, &p));
+	kfree_skb(skb);
+}
+
+static void h418_early_rx_record(struct kunit *test)
+{
+	struct sk_buff *skb = h418_test_skb(true, false);
+	struct h418_session *s = h418_test_arm(true);
+	u64 total = 0;
+	unsigned int cpu;
+
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	KUNIT_ASSERT_NOT_NULL(test, s);
+	skb->network_header = 0;
+	skb_put_zero(skb, 8); /* Padding must not inflate the recorded payload. */
+	__h418_record(skb, H418_PPE_RX, 14, 0, 0);
+	for (cpu = 0; cpu < s->cpus; cpu++) {
+		struct h418_ring *ring = &s->rings[cpu];
+
+		total += ring->count;
+		if (ring->count)
+			KUNIT_EXPECT_EQ(test, le32_to_cpu(ring->records[0].payload), 32U);
+	}
+	KUNIT_EXPECT_EQ(test, total, 1ULL);
+	KUNIT_EXPECT_EQ(test, skb->network_header, (u16)0);
+	h418_test_disarm();
+	kfree_skb(skb);
+}
+
 static void h418_reject_fragments(struct kunit *test)
 {
 	struct sk_buff *skb = h418_test_skb(true, false);
@@ -269,6 +340,9 @@ static void h418_binary_abi(struct kunit *test)
 static struct kunit_case h418_cases[] = {
 	KUNIT_CASE(h418_decode_offsets),
 	KUNIT_CASE(h418_reject_truncated),
+	KUNIT_CASE(h418_early_rx_offsets),
+	KUNIT_CASE(h418_early_rx_vlan),
+	KUNIT_CASE(h418_early_rx_record),
 	KUNIT_CASE(h418_reject_fragments),
 	KUNIT_CASE(h418_dsack_parser),
 	KUNIT_CASE(h418_malformed_sack),

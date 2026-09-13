@@ -44,7 +44,7 @@ def patch_counts(path):
     return errors
 
 
-def prepare():
+def prepare(check_only=False):
     for p in (ROOT / 'kernel').glob('*.patch'):
         errors = patch_counts(p)
         if errors:
@@ -56,9 +56,9 @@ def prepare():
     tag = hashlib.sha256(b''.join(str(p.relative_to(ROOT)).encode() + p.read_bytes()
                                  for p in inputs if p.is_file())).hexdigest()[:16]
     target = CACHE / ('kernel-' + tag)
-    if (target / '.debug-prepared').exists():
+    if not check_only and (target / '.debug-prepared').exists():
         return target
-    if target.exists():
+    if not check_only and target.exists():
         raise RuntimeError(f'Partial tree {target}; inspect it before retrying')
     # Validate the complete series against only the affected files first.
     with tempfile.TemporaryDirectory(dir=CACHE, prefix='check-') as temp:
@@ -81,6 +81,9 @@ def prepare():
                     shutil.copyfile(src, dest)
             with patch.open() as f:
                 run('patch', '--batch', '--fuzz=0', '-p1', '-d', shadow, stdin=f)
+        if check_only:
+            print('PATCH_SERIES_OK (affected files only; no kernel build)', flush=True)
+            return None
         run('cp', '--reflink=auto', '-a', UPSTREAM, target)
         for path in shadow.rglob('*'):
             if path.is_file() and not path.name.endswith(('.orig', '.rej')):
@@ -130,11 +133,13 @@ def objects(tree, jobs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'objects', 'kunit'))
+    parser.add_argument('action', choices=('check', 'prepare', 'objects', 'kunit'))
     parser.add_argument('--jobs', type=int, default=6)
     args = parser.parse_args()
     os.environ['CCACHE_DIR'] = str(CACHE / 'ccache')
-    tree = prepare()
+    tree = prepare(check_only=args.action == 'check')
+    if args.action == 'check':
+        return
     print('KERNEL', tree, flush=True)
     if args.action == 'objects':
         objects(tree, args.jobs)

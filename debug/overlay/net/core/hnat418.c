@@ -8,6 +8,7 @@
 #include <linux/hash.h>
 #include <linux/inet.h>
 #include <linux/ip.h>
+#include <linux/if_vlan.h>
 #include <linux/jiffies.h>
 #include <linux/ktime.h>
 #include <linux/module.h>
@@ -87,15 +88,14 @@ EXPORT_SYMBOL_GPL(h418_session_key);
 static DEFINE_MUTEX(h418_mutex);
 static struct h418_session __rcu *h418_current;
 
-static bool h418_decode(const struct sk_buff *skb, struct h418_packet *p)
+static bool h418_decode_at(const struct sk_buff *skb, struct h418_packet *p,
+			   int offset)
 {
 	const struct iphdr *ip;
 	const struct tcphdr *tcp;
-	int offset;
 
 	if (!skb)
 		return false;
-	offset = skb_network_offset(skb);
 	/* A receive skb can have its IP header immediately before skb->data. */
 	if (offset < -(int)skb_headroom(skb) ||
 	    offset > (int)skb_headlen(skb) - (int)sizeof(p->ip))
@@ -117,6 +117,38 @@ static bool h418_decode(const struct sk_buff *skb, struct h418_packet *p)
 		p->tcp = *tcp;
 	p->header_len = p->ip.ihl * 4 + p->tcp.doff * 4;
 	return p->netoff + p->header_len <= (int)skb->len;
+}
+
+static bool h418_decode(const struct sk_buff *skb, struct h418_packet *p)
+{
+	return skb && h418_decode_at(skb, p, skb_network_offset(skb));
+}
+
+/* mtk_poll_rx has called eth_type_trans(), but GRO has not initialized
+ * network_header yet. Decode from data, optionally past two inline VLANs.
+ * Do not reset headers, pull data or otherwise change the observed skb.
+ */
+static bool h418_decode_rx(const struct sk_buff *skb, struct h418_packet *p)
+{
+	struct vlan_hdr buf;
+	const struct vlan_hdr *vlan;
+	__be16 protocol;
+	int offset = 0, depth = 0;
+
+	if (!skb)
+		return false;
+	protocol = skb->protocol;
+	while (eth_type_vlan(protocol) && depth++ < 2) {
+		vlan = skb_header_pointer(skb, offset, sizeof(buf), &buf);
+		if (!vlan)
+			return false;
+		protocol = vlan->h_vlan_encapsulated_proto;
+		offset += VLAN_HLEN;
+	}
+	if (protocol != htons(ETH_P_IP) || !h418_decode_at(skb, p, offset))
+		return false;
+	return ntohs(p->ip.tot_len) >= p->header_len &&
+	       ntohs(p->ip.tot_len) <= skb->len - offset;
 }
 
 static bool h418_match(const struct h418_session *s, struct h418_packet *p)
@@ -209,7 +241,8 @@ void __h418_record(const struct sk_buff *skb, unsigned int stage,
 	rcu_read_lock();
 	s = rcu_dereference(h418_current);
 	if (!s || !s->capture || smp_load_acquire(&s->frozen) ||
-	    time_after_eq(jiffies, s->deadline) || !h418_decode(skb, &p) ||
+	    time_after_eq(jiffies, s->deadline) ||
+	    !(stage == H418_PPE_RX ? h418_decode_rx(skb, &p) : h418_decode(skb, &p)) ||
 	    !h418_match(s, &p))
 		goto out;
 	/* Only the TCP receive boundary observes upstream ACK/SACK once. */
@@ -225,7 +258,9 @@ void __h418_record(const struct sk_buff *skb, unsigned int stage,
 	r.cookie = cpu_to_le32(hash_ptr(skb, 32));
 	r.seq = cpu_to_le32(ntohl(p.tcp.seq));
 	r.ack = cpu_to_le32(ntohl(p.tcp.ack_seq));
-	r.payload = cpu_to_le32(skb->len - p.netoff - p.header_len);
+	/* Ethernet padding on early RX is not TCP payload. */
+	r.payload = cpu_to_le32(stage == H418_PPE_RX ?
+		ntohs(p.ip.tot_len) - p.header_len : skb->len - p.netoff - p.header_len);
 	r.skb_len = cpu_to_le32(skb->len);
 	r.mark = cpu_to_le32(skb->mark);
 	r.cb44 = cpu_to_le32(get_unaligned((u32 *)&skb->cb[44]));
