@@ -3,25 +3,22 @@ Subject: netfilter: keep confirmed full-cone conntracks immutable and bound port
 The vendor full-cone branch treats NF_ACCEPT from nf_nat_setup_info() as
 permission to add a helper. For confirmed connections that verdict means no
 setup was done; adding an extension can reallocate memory used by readers.
-Also avoid a u16 wrap at port 65535 while holding the expectation spinlock.
+Keep that guard inside the full-cone UDP path so ordinary MASQUERADE behavior
+is unchanged when full-cone NAT is disabled. Also avoid a u16 wrap at port
+65535 while holding the expectation spinlock.
 
 --- a/net/netfilter/nf_nat_masquerade.c
 +++ b/net/netfilter/nf_nat_masquerade.c
-@@ -171,6 +171,13 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
- 	WARN_ON(!(ct && (ctinfo == IP_CT_NEW || ctinfo == IP_CT_RELATED ||
- 			 ctinfo == IP_CT_RELATED_REPLY)));
- 
-+	/* NAT rules can be revisited with an already confirmed conntrack.
-+	 * nf_nat_setup_info() returns NF_ACCEPT without changing it in that
-+	 * case. Do not add extensions or change a mapping shared by readers.
-+	 */
-+	if (nf_ct_is_confirmed(ct))
-+		return NF_ACCEPT;
+@@ -199,1 +199,8 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
+                struct nf_conntrack_expect *exp;
++               /* nf_nat_setup_info() accepts confirmed conntracks without
++                * changing them. Do not treat that verdict as permission to
++                * attach the full-cone helper to immutable shared state.
++                */
++               if (nf_ct_is_confirmed(ct))
++                       return NF_ACCEPT;
 +
- 	/* Source address is 0.0.0.0 - locally generated packet that is
- 	 * probably not supposed to be masqueraded.
- 	 */
-@@ -210,7 +218,8 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
+@@ -209,7 +216,8 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
                         pr_debug("bcm_nat: existing mapped port = %hu\n",
                                  ntohs(minport));
                 } else { /* no previous expect */
@@ -31,7 +28,7 @@ Also avoid a u16 wrap at port 65535 while holding the expectation spinlock.
  
                         minport = range->min_proto.all == 0?
                                 ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.
-@@ -228,6 +237,13 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
+@@ -226,5 +234,12 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
                                         break;
                                 }
                         }
