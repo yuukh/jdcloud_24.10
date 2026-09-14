@@ -256,24 +256,6 @@ jobs:
           package/mtk/applications/luci-app-eqos-mtk/root/etc/init.d/dhcp_mark.sh \
           'ebtables -t nat -A eqos -p ipv6' 3
 
-        echo
-        echo "===== HNAT: cpu_to_ge_bypass cached switch ====="
-        echo "file: target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c"
-        grep -n -F -B 3 -A 3 -- 'cpu_to_ge_bypass' \
-          target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c || {
-          echo "expected HNAT patched content not found" >&2
-          exit 1
-        }
-
-        echo
-        echo "===== HNAT package: default parameter and persistent conffile ====="
-        echo "file: package/kernel/linux/modules/netdevices.mk"
-        grep -n -E -B 3 -A 3 -- 'MODPARAMS\.mtkhnat|mediatek_hnat/conffiles|20-mediatek_hnat' \
-          package/kernel/linux/modules/netdevices.mk || {
-          echo "expected HNAT package patched content not found" >&2
-          exit 1
-        }
-
     - name: 编译固件
       id: compile
       run: |

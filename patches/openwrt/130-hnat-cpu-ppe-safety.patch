@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,106 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef MTK_HNAT_CPU_H
 +#define MTK_HNAT_CPU_H
@@ -64,9 +64,6 @@
 +	struct net_device *dev = READ_ONCE(hnat_priv->g_ppdev);
 +	unsigned int headroom = FOE_INFO_LEN + ETH_HLEN;
 +	bool tagged = skb_vlan_tag_present(skb);
-+
-+	if (unlikely(cpu_to_ge_bypass))
-+		return NF_ACCEPT;
 +
 +	if (skb->mark == HNAT_EXCEPTION_TAG || !dev ||
 +	    !(READ_ONCE(dev->flags) & IFF_UP) ||

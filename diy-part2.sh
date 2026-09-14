@@ -49,7 +49,6 @@ install -Dm0644 \
 # silently producing a firmware without the requested fixes.
 apply_source_patch "$PATCH_DIR/openwrt/100-miniupnpd-fw4-lifecycle.patch"
 apply_source_patch "$PATCH_DIR/openwrt/110-pr430-fix-ebtables-ipv6.patch"
-apply_source_patch "$PATCH_DIR/openwrt/120-hnat-cpu-to-ge-bypass.patch"
 apply_source_patch "$PATCH_DIR/openwrt/130-hnat-cpu-ppe-safety.patch"
 
 # Modify default IP
