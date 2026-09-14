@@ -27,7 +27,12 @@ if [ -r /proc/config.gz ]; then
     zcat /proc/config.gz | grep -E 'CONFIG_(HNAT418|NET_MEDIATEK|MEDIATEK_NETSYS|DEBUG_FS|KPROBES|FTRACE|TRACING|MODULE|MODVERSIONS|KALLSYMS|IKCONFIG|NET_SCH)'
 fi
 printf '\n=== kernel-log-tail ===\n'
-dmesg | tail -n 250
+# A line-count tail cut off the beginning of the observed Full Cone warning.
+# Preserve up to 256 KiB from the kernel ring, still bounded across all rounds.
+# The ring or this byte bound can already have overwritten older messages.
+printf 'kernel-log-bound=262144-bytes; older messages may be unavailable\n'
+dmesg | tail -c 262144
+printf '\n'
 printf '\n=== recent-system-log ===\n'
 logread | tail -n 150
 printf '\n=== memory ===\n'

@@ -1,0 +1,48 @@
+Subject: netfilter: keep confirmed full-cone conntracks immutable and bound port search
+
+The vendor full-cone branch treats NF_ACCEPT from nf_nat_setup_info() as
+permission to add a helper.  For confirmed connections that verdict means
+no setup was done; adding an extension can reallocate memory used by readers.
+Also avoid a u16 wrap at port 65535 while holding the expectation spinlock.
+
+--- a/net/netfilter/nf_nat_masquerade.c
++++ b/net/netfilter/nf_nat_masquerade.c
+@@ -171,6 +171,14 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
+ 	WARN_ON(!(ct && (ctinfo == IP_CT_NEW || ctinfo == IP_CT_RELATED ||
+ 			 ctinfo == IP_CT_RELATED_REPLY)));
+ 
++	/* NAT rules can be revisited with an already confirmed conntrack.
++	 * nf_nat_setup_info() returns NF_ACCEPT without changing it in that
++	 * case.  Do not interpret that verdict as permission to allocate a
++	 * helper extension or change an existing mapping shared by readers.
++	 */
++	if (nf_ct_is_confirmed(ct))
++		return NF_ACCEPT;
++
+ 	/* Source address is 0.0.0.0 - locally generated packet that is
+ 	 * probably not supposed to be masqueraded.
+ 	 */
+@@ -210,7 +218,8 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
+                        pr_debug("bcm_nat: existing mapped port = %hu\n",
+                                 ntohs(minport));
+                } else { /* no previous expect */
+-                       u_int16_t newport, tmpport, orgport;
++                       unsigned int newport, tmpport;
++                       u_int16_t orgport;
+ 
+                        minport = range->min_proto.all == 0?
+                                ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.
+@@ -228,6 +237,13 @@ nf_nat_masquerade_ipv4(struct sk_buff *skb, unsigned int hooknum,
+                                        break;
+                                }
+                        }
++                       /* Never wrap and scan forever under the BH lock,
++                        * or silently use an occupied/out-of-range port.
++                        */
++                       if (newport > tmpport) {
++                               spin_unlock_bh(&nf_conntrack_expect_lock);
++                               return NF_DROP;
++                       }
+                }
+                spin_unlock_bh(&nf_conntrack_expect_lock);
+ 

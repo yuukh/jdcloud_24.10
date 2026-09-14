@@ -240,6 +240,69 @@ def tcp_counters(text):
     return result
 
 
+def snapshot_section(text, name):
+    match = re.search(r'^=== ' + re.escape(name) + r' ===\s*\n(.*?)(?=^=== |\Z)',
+                      text, re.M | re.S)
+    return match[1] if match else ''
+
+
+def snapshot_uptime(text):
+    match = re.search(r'^\s*(\d+(?:\.\d+)?)\s+\d+(?:\.\d+)?\s*$',
+                      snapshot_section(text, 'time'), re.M)
+    return float(match[1]) if match else None
+
+
+def kernel_warning_audit(before, after):
+    """Distinguish old boot warnings from new timestamped observations.
+
+    A warning outside the supplied ring window cannot be counted.  A warning
+    during a round is system-wide evidence, not proof that iperf caused it.
+    """
+    pattern = r'BUG:|WARNING:|Call trace:|NETDEV WATCHDOG|oom-kill|Oops:|KASAN:|UBSAN:|Kernel panic'
+
+    def warnings(text):
+        log = snapshot_section(text, 'kernel-log-tail')
+        return list(dict.fromkeys(line for line in log.splitlines() if re.search(pattern, line)))
+
+    old, new = warnings(before), warnings(after)
+    start, end = snapshot_uptime(before), snapshot_uptime(after)
+    reset = start is not None and end is not None and end < start
+    pre_existing, during, unknown = list(old), [], []
+    for line in new:
+        if line in old and not reset:
+            continue
+        match = re.match(r'^\[\s*(\d+(?:\.\d+)?)\]', line)
+        stamp = float(match[1]) if match else None
+        if reset or start is None or stamp is None:
+            unknown.append(line)
+        elif stamp < start:
+            if line not in pre_existing:
+                pre_existing.append(line)
+        elif end is not None and stamp <= end:
+            during.append(line)
+        else:
+            unknown.append(line)
+    return {
+        'before_uptime': start, 'after_uptime': end, 'clock_reset_detected': reset,
+        'pre_existing': pre_existing, 'new_during_round': during,
+        'unclassified': unknown,
+        'limits': 'System-wide bounded kernel log windows, not a complete boot history. '
+                  'Repeated pre-existing lines are not new warnings in every round. '
+                  'A warning during a round does not establish causation by that flow.',
+    }
+
+
+def retransmission_intervals(server):
+    """Retain each iperf interval with retransmits, not only its average rate."""
+    result = []
+    for interval in server.get('intervals', []):
+        total = interval.get('sum', {})
+        if total.get('retransmits', 0) > 0:
+            result.append({key: total.get(key) for key in
+                           ('start', 'end', 'seconds', 'bits_per_second', 'retransmits')})
+    return result
+
+
 def analyze(archive_path, clients=None, metadata_layout=None):
     with tarfile.open(archive_path, 'r:*') as archive:
         members = {}
@@ -290,6 +353,8 @@ def analyze(archive_path, clients=None, metadata_layout=None):
                                            'Retrans|DSACK|Reorder|SACK|Loss|Spurious|InSegs|OutSegs', key, re.I)},
                 'kernel_warnings': [line for line in after.splitlines() if re.search(
                     r'BUG:|WARNING:|Call trace:|NETDEV WATCHDOG|oom-kill|Oops:', line)],
+                'kernel_warning_audit': kernel_warning_audit(before, after),
+                'retransmission_intervals': retransmission_intervals(server),
             }
             sockets = [line.strip() for line in timeline.splitlines()
                        if 'cubic ' in line and 'bytes_sent:' in line]
@@ -308,6 +373,13 @@ def analyze(archive_path, clients=None, metadata_layout=None):
                     'dsack_acks', 'freeze_reason', 'stage_counts', 'bridge_decisions', 'ppe_cpu_reasons')}
                 round_result['trace']['repeated_header_key_counts'] = {
                     key: len(value) for key, value in basic['repeated_header_keys'].items()}
+                round_result['trace']['freeze_after_arm_seconds'] = (
+                    metadata['frozen_ns'] - metadata['started_ns']) / 1_000_000_000
+                if 'tcp-ack-counters=total_retrans,reord_seen,dsack_dups' in before:
+                    acks = [row for row in rows if row['stage_name'] == 'tcp_ack']
+                    round_result['trace']['retained_ack_counter_maxima'] = {
+                        name: max((row[field] for row in acks), default=None)
+                        for name, field in (('total_retrans', 'a'), ('reord_seen', 'b'), ('dsack_dups', 'c'))}
                 round_result['provenance'] = provenance(rows)
                 if metadata_layout is not None:
                     round_result['metadata_trust'] = metadata_trust(rows, metadata_layout)

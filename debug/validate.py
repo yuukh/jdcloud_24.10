@@ -68,9 +68,10 @@ def prepare(check_only=False):
                 stdout=subprocess.DEVNULL)
         hw = temp / 'target/linux/mediatek'
         base = hw / 'patches-6.6/999999-hnat418-cpu-wifi-ownership-and-metadata.patch'
+        series = (base, ROOT / 'kernel/fullcone.patch', ROOT / 'kernel/hooks.patch')
         shadow = temp / 'shadow'
         shadow.mkdir()
-        for patch in (base, ROOT / 'kernel/hooks.patch'):
+        for patch in series:
             for name in re.findall(r'^--- a/(.+)$', patch.read_text(), re.M):
                 dest = shadow / name
                 if not dest.exists():
@@ -94,7 +95,7 @@ def prepare(check_only=False):
         # Emit a reviewable final delta, separate from production inputs.
         with (CACHE / (target.name + '.diff')).open('w') as output:
             for name in sorted(set(re.findall(r'^--- a/(.+)$',
-                    base.read_text() + (ROOT / 'kernel/hooks.patch').read_text(), re.M))):
+                    ''.join(p.read_text() for p in series), re.M))):
                 before = (UPSTREAM / name).read_text() if (UPSTREAM / name).exists() else ''
                 after = (target / name).read_text()
                 output.writelines(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
@@ -126,6 +127,7 @@ def objects(tree, jobs):
         run(*command, f'-j{jobs}', 'net/core/hnat418.o', 'net/core/dev.o',
             'net/core/skbuff.o', 'net/core/gro.o', 'net/bridge/br_input.o',
             'net/ipv4/ip_output.o', 'net/ipv4/tcp_ipv4.o',
+            'net/netfilter/nf_nat_masquerade.o',
             'drivers/net/ethernet/mediatek/mtk_eth_soc.o',
             'drivers/net/ethernet/mediatek/mtk_hnat/', **output)
     print('OBJECTS_OK', build, flush=True)

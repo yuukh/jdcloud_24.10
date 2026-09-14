@@ -1,3 +1,4 @@
-# Unified diff context uses a mandatory space before a tab or empty line.
-debug/kernel/*.patch whitespace=-blank-at-eol,-space-before-tab
+# Unified diff context uses a mandatory space before a tab or empty line,
+# including a final context line at the end of a patch hunk/file.
+debug/kernel/*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
 debug/mt_wifi/*.patch whitespace=-blank-at-eol,-space-before-tab

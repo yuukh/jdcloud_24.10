@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Included by hnat418.c only in the QEMU test configuration. */
 #include <kunit/test.h>
+#if IS_ENABLED(CONFIG_NF_NAT_MASQUERADE)
+#include <net/netfilter/nf_conntrack.h>
+#include <net/netfilter/nf_conntrack_helper.h>
+#include <net/netfilter/nf_nat_masquerade.h>
+#endif
 
 static struct sk_buff *h418_test_skb(bool down, bool dsack)
 {
@@ -461,6 +466,61 @@ static void h418_binary_abi(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, offsetof(struct h418_record, stage), (size_t)136);
 }
 
+#if IS_ENABLED(CONFIG_NF_NAT_MASQUERADE)
+/* Call the actual patched netfilter function, not a copy of its guard.
+ * A confirmed connection must return without even needing route/device
+ * context.  This is a lifetime contract fixture, not a concurrent NAT test.
+ */
+static void h418_confirmed_nat_case(struct kunit *test, bool with_helper)
+{
+	struct nf_conn *ct = kunit_kzalloc(test, sizeof(*ct), GFP_KERNEL);
+	struct nf_conn saved;
+	struct nf_nat_range2 range = {};
+	struct nf_conn_help *help = NULL;
+	struct sk_buff *skb;
+	unsigned int verdict;
+
+	KUNIT_ASSERT_NOT_NULL(test, ct);
+	skb = alloc_skb(128, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, skb);
+	if (with_helper) {
+		help = nf_ct_helper_ext_add(ct, GFP_KERNEL);
+		if (!help) {
+			kfree_skb(skb);
+			KUNIT_FAIL(test, "cannot allocate helper fixture");
+			return;
+		}
+	}
+	ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u3.ip = htonl(0xc0000201);
+	ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.protonum = IPPROTO_UDP;
+	set_bit(IPS_CONFIRMED_BIT, &ct->status);
+	memcpy(&saved, ct, sizeof(saved));
+	nf_ct_set(skb, ct, IP_CT_NEW);
+	verdict = nf_nat_masquerade_ipv4(skb, NF_INET_POST_ROUTING, &range, NULL);
+	KUNIT_EXPECT_EQ(test, verdict, (unsigned int)NF_ACCEPT);
+	KUNIT_EXPECT_EQ(test, memcmp(ct, &saved, sizeof(saved)), 0);
+	if (help)
+		KUNIT_EXPECT_PTR_EQ(test, rcu_access_pointer(help->helper), NULL);
+	/* This fixture never acquired a conntrack reference or inserted a hash
+	 * entry.  Detach it before freeing the skb; free its extension directly.
+	 */
+	nf_ct_set(skb, NULL, 0);
+	kfree_skb(skb);
+	kfree(ct->ext);
+	ct->ext = NULL;
+}
+
+static void h418_confirmed_nat_without_extension(struct kunit *test)
+{
+	h418_confirmed_nat_case(test, false);
+}
+
+static void h418_confirmed_nat_with_extension(struct kunit *test)
+{
+	h418_confirmed_nat_case(test, true);
+}
+#endif
+
 static struct kunit_case h418_cases[] = {
 	KUNIT_CASE(h418_decode_offsets),
 	KUNIT_CASE(h418_reject_truncated),
@@ -480,6 +540,10 @@ static struct kunit_case h418_cases[] = {
 	KUNIT_CASE(h418_manual_freeze_immutable),
 	KUNIT_CASE(h418_reader_survives_stop),
 	KUNIT_CASE(h418_binary_abi),
+#if IS_ENABLED(CONFIG_NF_NAT_MASQUERADE)
+	KUNIT_CASE(h418_confirmed_nat_without_extension),
+	KUNIT_CASE(h418_confirmed_nat_with_extension),
+#endif
 	{}
 };
 static struct kunit_suite h418_suite = {

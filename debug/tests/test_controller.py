@@ -98,6 +98,10 @@ class ControllerTests(unittest.TestCase):
 
     def test_four_rounds_archive_and_cleanup(self):
         result = self.run_controller()
+        self.assertIn('hardware-a port=5201 hardware=1 capture=2', result.stdout)
+        self.assertIn('bypass port=5202 hardware=0 capture=1', result.stdout)
+        self.assertIn('hardware-quiet port=5203 hardware=1 capture=0', result.stdout)
+        self.assertIn('hardware-b port=5204 hardware=1 capture=2', result.stdout)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.count('HNAT418 ROUND_END'), 4)
         self.assertFalse((self.root / 'lock').exists())

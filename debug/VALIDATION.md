@@ -1,5 +1,45 @@
 # 验证记录
 
+## 2026-09-14：067f7e4 实机复核后的 Full Cone / 捕获修复
+
+实机输入是 `results-20260914-100644`，不是上一节旧版本的结果。
+详细证据及尚未闭环的问题见 `results/2026-09-14-067f7e4-audit.md`。
+以下是本轮修补后重新执行的验证，不沿用旧固件的通过记录。
+
+| 验证 | 本轮实际结果 |
+|---|---|
+| 固定 Linux 6.6.133 的相关补丁序列 | 含新 Full Cone 补丁，全部零 fuzz 应用成功 |
+| 用户态回归 | 54 项通过，无跳过 |
+| Full Cone 真实函数的宿主机逻辑回归 | 5 组测试，ASan/UBSan；旧 confirmed 扩展/状态修改及端口回绕可复现，新代码通过；覆盖新流、已有 helper/expectation、末端端口、耗尽、无效范围及分配/设置失败 |
+| ARM64 内核对象 | 记录器、netdev、skb、GRO、bridge、IPv4 输出、TCP 接收、MediaTek Ethernet、HNAT 以及新增的 nf_nat_masquerade.o 全部编译通过 |
+| ARM64 QEMU + KASAN + UBSAN | 20 项 KUnit 全部通过；新增两个测试直接调用实际 nf_nat_masquerade_ipv4，验证 confirmed 连接有/无 helper 扩展均不被重新初始化 |
+| QEMU 真实 debugfs/TCP 运行测试 | 64 KiB TCP 收发，33 个记录事件；停止 session 后完整读取 2359392 字节；25 次 quiet 启停成功；SMOKE_EXIT=0 |
+| 日志复核 | KUnit 原始日志与 runtime smoke 中未发现 BUG、WARNING、KASAN、UBSAN、Kernel panic 或 runtime error 诊断 |
+| 静态检查 | ShellCheck、Bash/BusyBox ash 语法、PowerShell AST、git diff --check 通过；合法 unified-diff 末尾上下文空行沿用补丁专用 whitespace 例外，不放宽 C/Python/shell 源码检查 |
+| 原始归档重分析 | A 的保留 ACK 计数器累计重传最大值为 1；A 的主要 765 次突发发生于冻结之后；已保留警告均在对应轮次之前，没有被误算为四轮分别新增 |
+
+54 项由原有 43 项加 5 项 Full Cone 测试、6 项警告/区间归类测试组成。
+控制器测试同时检查 A/B 的 capture=2、bypass 的 capture=1、quiet 的 capture=0。
+PowerShell 测试是在 Linux ARM64 上模拟 ssh/scp/iperf 流程，不冒充真实 Windows 网卡测试。
+Full Cone 宿主机测试使用真实函数和依赖桩；内核测试使用未加入哈希表的 confirmed 生命周期夹具。
+两者都不是生产 conntrack 的并发压力测试，也不模拟 PPE/WED 或无线固件。
+
+```text
+/cache/hnat418-debug/prepare-100644.log
+/cache/hnat418-debug/tests-100644.log
+/cache/hnat418-debug/objects-100644.log
+/cache/hnat418-debug/kernel-16f9491b7da6a0d7-objects.log
+/cache/hnat418-debug/kunit-100644.log
+/cache/hnat418-debug/kernel-16f9491b7da6a0d7-kunit/test.log
+/cache/hnat418-debug/runtime-100644.log
+/cache/hnat418-debug/runtime-smoke/qemu.log
+/cache/hnat418-debug/session-20260914-100644-audited.json
+```
+
+本轮没有构建或刷入新的整机 sysupgrade 镜像。已修补的 Full Cone 生命周期错误不能据此
+被宣称为全部重传的实机根因；新的内核警告是否消失、硬件路径的吞吐/重传是否改善，
+仍需使用新提交、新缓存构建后复测。旧版启动告警、重复反馈与瞬时重传不得被平均速率掩盖。
+
 ## 2026-09-14：残留 metadata 消费点与捕获修复
 
 输入与实机证据见 `results/2026-09-14-post-provenance-audit.md`。

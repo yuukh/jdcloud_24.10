@@ -222,7 +222,10 @@ run_one() {
     [ "$used_kb" -lt 65536 ] || fail 'Per-run evidence limit reached; refusing more writes.'
 }
 
-run_one 5201 1 1 hardware-a
+# Both recorded hardware rounds must preserve their own recovery event.
+# A DSACK-only freeze in A previously discarded a burst at second 59;
+# waiting for a different flow in B to reproduce it cannot recover that data.
+run_one 5201 1 2 hardware-a
 run_one 5202 0 1 bypass
 run_one 5203 1 0 hardware-quiet
 # Preserve a later recovery/ordering event instead of freezing both hardware

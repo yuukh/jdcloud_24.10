@@ -51,6 +51,8 @@ def install(source):
     subprocess.run(['git', '-C', str(source), 'apply', str(ROOT / 'kernel/base.patch')], check=True)
     files = source / 'target/linux/mediatek/files-6.6'
     shutil.copytree(ROOT / 'overlay', files, dirs_exist_ok=True)
+    shutil.copyfile(ROOT / 'kernel/fullcone.patch', source /
+                    'target/linux/mediatek/patches-6.6/9999998-hnat418-fullcone-lifetime.patch')
     shutil.copyfile(ROOT / 'kernel/hooks.patch', source /
                     'target/linux/mediatek/patches-6.6/9999999-hnat418-bounded-debug.patch')
     shutil.copyfile(wifi_patch, source / 'package/mtk/drivers/mt_wifi/patches' / wifi_patch.name)
@@ -67,6 +69,8 @@ def install(source):
                 'firmware-repo=' + command('git', '-C', ROOT.parent, 'rev-parse', 'HEAD'),
                 'tcp-ack-counters=total_retrans,reord_seen,dsack_dups',
                 'capture-modes=0:quiet,1:dsack,2:recovery',
+                'hardware-round-capture=5201:recovery,5204:recovery',
+                'fullcone-fixes=confirmed-immutable,bounded-port-search',
                 'source-note=IPv4 scoped diagnostic build, not a final HNAT fix']
     manifest.append('fresh-install-lan=' + ip)
     for path in sorted(ROOT.rglob('*')):
