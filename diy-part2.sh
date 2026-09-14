@@ -51,6 +51,7 @@ apply_source_patch "$PATCH_DIR/openwrt/100-miniupnpd-fw4-lifecycle.patch"
 apply_source_patch "$PATCH_DIR/openwrt/110-pr430-fix-ebtables-ipv6.patch"
 apply_source_patch "$PATCH_DIR/openwrt/130-hnat-cpu-ppe-safety.patch"
 apply_source_patch "$PATCH_DIR/openwrt/140-hnat-table-allocation.patch"
+apply_source_patch "$PATCH_DIR/openwrt/141-hnat-roaming-lifetime.patch"
 
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate

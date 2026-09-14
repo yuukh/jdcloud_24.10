@@ -1,0 +1,182 @@
+Subject: net: mediatek: join the roaming receiver before releasing its socket
+
+The self-rearming system work item blocks indefinitely in recvmsg, and remove
+releases its socket without cancelling or joining the receiver. A failed bind
+also leaves a dangling global socket pointer. Use a stoppable kthread with an
+explicit queue/stop wait condition and a nonblocking recvmsg, then join before
+release. Publish the socket only after bind and thread creation both succeed.
+
+Validate every complete neighbour message and MAC attribute. The old parser
+subtracts NLMSG_HDRLEN twice and can miss a minimal legal FDB notification;
+short ndmsg and LLADDR payloads were read without their minimum size checks.
+Keep the existing neighbour group, port ID, buffer size and FDB event semantics.
+
+--- a/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
++++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
+@@ -15,19 +15,21 @@
+ #include <linux/delay.h>
+ #include <linux/if.h>
+ #include <linux/io.h>
++#include <linux/kthread.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
+ #include <linux/reset.h>
+ #include <linux/rtnetlink.h>
+ #include <net/netlink.h>
++#include <net/sock.h>
+ 
+ #include "nf_hnat_mtk.h"
+ #include "hnat.h"
+ 
+ struct mtk_hnat *hnat_priv;
+ static struct socket *_hnat_roam_sock;
+-static struct work_struct _hnat_roam_work;
++static struct task_struct *_hnat_roam_task;
+ 
+ int (*ra_sw_nat_hook_rx)(struct sk_buff *skb) = NULL;
+ EXPORT_SYMBOL(ra_sw_nat_hook_rx);
+@@ -212,64 +214,75 @@ int entry_delete_by_mac(u8 *mac)
+ 	return ret;
+ }
+ 
+-static void hnat_roam_handler(struct work_struct *work)
++static void hnat_roaming_notify(void *buffer, int len)
+ {
+-	struct kvec iov;
+-	struct msghdr msg;
+ 	struct nlmsghdr *nlh;
+ 	struct ndmsg *ndm;
+ 	struct nlattr *nla;
+-	u8 rcv_buf[512];
+-	int len;
++	int remaining, attr_remaining;
+ 
+-	if (!_hnat_roam_sock)
+-		return;
+-
+-	iov.iov_base = rcv_buf;
+-	iov.iov_len = sizeof(rcv_buf);
+-	memset(&msg, 0, sizeof(msg));
+-	msg.msg_namelen = sizeof(struct sockaddr_nl);
++	nlmsg_for_each_msg(nlh, buffer, len, remaining) {
++		if (nlh->nlmsg_type != RTM_NEWNEIGH ||
++		    nlmsg_len(nlh) < sizeof(*ndm))
++			continue;
+ 
+-	len = kernel_recvmsg(_hnat_roam_sock, &msg, &iov, 1, iov.iov_len, 0);
+-	if (len <= 0)
+-		goto out;
++		ndm = nlmsg_data(nlh);
++		if (ndm->ndm_family != PF_BRIDGE)
++			continue;
+ 
+-	nlh = (struct nlmsghdr*)rcv_buf;
+-	if (!NLMSG_OK(nlh, len) || nlh->nlmsg_type != RTM_NEWNEIGH)
+-		goto out;
++		nlmsg_for_each_attr(nla, nlh, sizeof(*ndm), attr_remaining) {
++			if (nla_type(nla) == NDA_LLADDR &&
++			    nla_len(nla) >= ETH_ALEN)
++				entry_delete_by_mac(nla_data(nla));
++		}
++	}
++}
+ 
+-	len = nlh->nlmsg_len - NLMSG_HDRLEN;
+-	ndm = (struct ndmsg *)NLMSG_DATA(nlh);
+-	if (ndm->ndm_family != PF_BRIDGE)
+-		goto out;
++static int hnat_roam_handler(void *data)
++{
++	struct socket *sock = data;
++	u8 rcv_buf[512] __aligned(NLMSG_ALIGNTO);
++	int len, ret;
++
++	while (!kthread_should_stop()) {
++		struct msghdr msg = {};
++		struct kvec iov = {
++			.iov_base = rcv_buf,
++			.iov_len = sizeof(rcv_buf),
++		};
++
++		/* A blocking recvmsg cannot observe kthread_stop(). Sleep on the
++		 * receive queue with an explicit stop condition, then receive without
++		 * blocking so teardown can join the thread before releasing its socket.
++		 */
++		ret = wait_event_interruptible(*sk_sleep(sock->sk),
++			kthread_should_stop() ||
++			!skb_queue_empty_lockless(&sock->sk->sk_receive_queue));
++		if (kthread_should_stop())
++			break;
++		if (ret)
++			continue;
+ 
+-	nla = (struct nlattr *)((u8 *)ndm + sizeof(struct ndmsg));
+-	len -= NLMSG_LENGTH(sizeof(struct ndmsg));
+-	while (nla_ok(nla, len)) {
+-		if (nla_type(nla) == NDA_LLADDR) {
+-			entry_delete_by_mac(nla_data(nla));
+-		}
+-		nla = nla_next(nla, &len);
++		len = kernel_recvmsg(sock, &msg, &iov, 1, iov.iov_len,
++				     MSG_DONTWAIT);
++		if (len > 0 && !(msg.msg_flags & MSG_TRUNC))
++			hnat_roaming_notify(rcv_buf, len);
+ 	}
+ 
+-out:
+-	schedule_work(&_hnat_roam_work);
++	return 0;
+ }
+ 
+ static int hnat_roaming_enable(void)
+ {
+ 	struct socket *sock = NULL;
++	struct task_struct *task;
+ 	struct sockaddr_nl addr;
+ 	int ret;
+ 
+-	INIT_WORK(&_hnat_roam_work, hnat_roam_handler);
+-
+ 	ret = sock_create_kern(&init_net, AF_NETLINK, SOCK_RAW, NETLINK_ROUTE, &sock);
+ 	if (ret < 0)
+ 		goto out;
+ 
+-	_hnat_roam_sock = sock;
+-
+ 	addr.nl_family = AF_NETLINK;
+ 	addr.nl_pad = 0;
+ 	addr.nl_pid = 65534;
+@@ -278,8 +291,15 @@ static int hnat_roaming_enable(void)
+ 	if (ret < 0)
+ 		goto out;
+ 
+-	schedule_work(&_hnat_roam_work);
+-	pr_info("hnat roaming work enable\n");
++	task = kthread_run(hnat_roam_handler, sock, "hnat-roam");
++	if (IS_ERR(task)) {
++		ret = PTR_ERR(task);
++		goto out;
++	}
++
++	_hnat_roam_sock = sock;
++	_hnat_roam_task = task;
++	pr_info("hnat roaming enable\n");
+ 
+ 	return 0;
+ out:
+@@ -291,10 +311,13 @@ out:
+ 
+ static void hnat_roaming_disable(void)
+ {
++	if (_hnat_roam_task)
++		kthread_stop(_hnat_roam_task);
++	_hnat_roam_task = NULL;
+ 	if (_hnat_roam_sock)
+ 		sock_release(_hnat_roam_sock);
+ 	_hnat_roam_sock = NULL;
+-	pr_info("hnat roaming work disable\n");
++	pr_info("hnat roaming disable\n");
+ }
+ 
+ static int hnat_hw_init(u32 ppe_id)
