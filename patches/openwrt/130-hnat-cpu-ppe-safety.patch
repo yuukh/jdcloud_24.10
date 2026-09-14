@@ -22,7 +22,9 @@
 +}
 +
 +/* Called at the bridge output hook, with skb->data at the network header.
-+ * Check eligibility before changing the skb: a bypass must leave it intact.
++ * Keep only the structural checks required to reinject the skb without first
++ * mutating it. Protocol acceptance below mirrors the vendor
++ * is_ppe_support_type() cases instead of narrowing the hardware feature set.
 + */
 +static bool hnat_cpu_packet_supported(const struct sk_buff *skb)
 +{
@@ -34,7 +36,7 @@
 +	if (!skb_mac_header_was_set(skb) ||
 +	    skb_headroom(skb) < ETH_HLEN ||
 +	    skb_mac_header(skb) != skb->data - ETH_HLEN ||
-+	    skb_network_offset(skb) || skb->encapsulation ||
++	    skb_network_offset(skb) ||
 +	    skb_shinfo(skb)->frag_list ||
 +	    is_multicast_ether_addr(eth_hdr(skb)->h_dest))
 +		return false;
@@ -42,15 +44,28 @@
 +	switch (skb->protocol) {
 +	case htons(ETH_P_IP):
 +		iph = skb_header_pointer(skb, 0, sizeof(ipbuf), &ipbuf);
-+		return iph && iph->version == 4 && iph->ihl == 5 &&
-+		       !ip_is_fragment(iph) &&
-+		       (iph->protocol == IPPROTO_TCP ||
-+			iph->protocol == IPPROTO_UDP);
++		if (!iph || iph->version != 4 || ipv4_is_multicast(iph->daddr))
++			return false;
++
++		return iph->protocol == IPPROTO_TCP ||
++		       iph->protocol == IPPROTO_UDP ||
++		       iph->protocol == IPPROTO_IPV6;
 +	case htons(ETH_P_IPV6):
 +		ip6h = skb_header_pointer(skb, 0, sizeof(ip6buf), &ip6buf);
-+		return ip6h && ip6h->version == 6 &&
-+		       (ip6h->nexthdr == IPPROTO_TCP ||
-+			ip6h->nexthdr == IPPROTO_UDP);
++		if (!ip6h || ip6h->version != 6 || ip6h->daddr.s6_addr[0] == 0xff)
++			return false;
++		if (ip6h->nexthdr == NEXTHDR_TCP ||
++		    ip6h->nexthdr == NEXTHDR_UDP)
++			return true;
++		if (ip6h->nexthdr != NEXTHDR_IPIP)
++			return false;
++
++		iph = skb_header_pointer(skb, IPV6_HDR_LEN,
++					 sizeof(ipbuf), &ipbuf);
++		return iph && (iph->protocol == IPPROTO_TCP ||
++			       iph->protocol == IPPROTO_UDP);
++	case htons(ETH_P_8021Q):
++		return true;
 +	default:
 +		return false;
 +	}
