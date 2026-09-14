@@ -32,12 +32,25 @@ install -Dm0644 \
 	"$PATCH_DIR/firewall4/9999-local-notify-ruleset-reload.patch" \
 	package/network/config/firewall4/patches/9999-local-notify-ruleset-reload.patch
 
+# Production HNAT fixes. These are normal kernel/driver patches: no recorder,
+# trace hook, debugfs control, test selector, or packet-capture instrumentation.
+install -Dm0644 \
+	"$PATCH_DIR/hnat/9999991-hnat-metadata-consumers.patch" \
+	target/linux/mediatek/patches-6.6/9999991-hnat-metadata-consumers.patch
+install -Dm0644 \
+	"$PATCH_DIR/hnat/9999992-fullcone-lifetime.patch" \
+	target/linux/mediatek/patches-6.6/9999992-fullcone-lifetime.patch
+install -Dm0644 \
+	"$PATCH_DIR/mt_wifi/999-hnat-local-tuple-provenance.patch" \
+	package/mtk/drivers/mt_wifi/patches/999-hnat-local-tuple-provenance.patch
+
 # Patch OpenWrt/package integration files after feeds are populated. A dry-run
 # is performed first so an upstream layout change fails the workflow instead of
 # silently producing a firmware without the requested fixes.
 apply_source_patch "$PATCH_DIR/openwrt/100-miniupnpd-fw4-lifecycle.patch"
 apply_source_patch "$PATCH_DIR/openwrt/110-pr430-fix-ebtables-ipv6.patch"
 apply_source_patch "$PATCH_DIR/openwrt/120-hnat-cpu-to-ge-bypass.patch"
+apply_source_patch "$PATCH_DIR/openwrt/130-hnat-cpu-ppe-safety.patch"
 
 # Modify default IP
 #sed -i 's/192.168.1.1/192.168.50.5/g' package/base-files/files/bin/config_generate

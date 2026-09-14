@@ -1,0 +1,68 @@
+Subject: net: mediatek: reject recycled HNAT metadata on local skbs
+
+Locally generated skbs can reuse memory that still contains a syntactically
+valid HNAT descriptor.  Such bytes are not ingress provenance.  Require the
+current skb to carry a real ingress marker before any HNAT metadata consumer
+uses the descriptor, and validate FOE/PPE indexes before table access.
+
+--- a/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+@@ -1949,5 +1949,10 @@ int mtk_sw_nat_hook_tx(struct sk_buff *skb, int gmac_no)
+ 	u32 dscp = 0;
+ 	int bind_state = 0;
++	/* A local skb can contain a valid-looking recycled RX descriptor.
++	 * Provenance must be established before any descriptor field is read.
++	 */
++	if (!hnat_cpu_has_valid_info(skb))
++		return NF_ACCEPT;
+ 	if (skb_hnat_alg(skb) || !is_hnat_info_filled(skb) ||
+ 	    !is_magic_tag_valid(skb) || !IS_SPACE_AVAILABLE_HEAD(skb))
+ 		return NF_ACCEPT;
+@@ -2281,18 +2286,21 @@ static unsigned int mtk_hnat_nf_post_routing(
+ 	struct flow_offload_hw_path hw_path = { .dev = (struct net_device*)out,
+ 						.virt_dev = (struct net_device*)out,
+ 						.flags = 0,
+-						.skb_hash = skb_hnat_entry(skb) };
++						.skb_hash = 0 };
+ 	const struct net_device *arp_dev = out;
+ 	
+ 
+ 	if (skb->protocol == htons(ETH_P_IPV6) && !hnat_priv->ipv6_en) {
+ 		return 0;
+ 	}
+ 
+ 
+-	if (skb_hnat_alg(skb) || unlikely(!is_magic_tag_valid(skb) ||
+-					  !IS_SPACE_AVAILABLE_HEAD(skb)))
++	if (!hnat_cpu_has_valid_info(skb) || skb_hnat_alg(skb))
++		return 0;
++	if (skb_hnat_entry(skb) >= hnat_priv->foe_etry_num ||
++	    skb_hnat_ppe(skb) >= CFG_PPE_NUM)
+ 		return 0;
++	hw_path.skb_hash = skb_hnat_entry(skb);
+ 
+ 	if (unlikely(!skb_mac_header_was_set(skb)))
+ 		return 0;
+@@ -2705,17 +2713,18 @@ mtk_hnat_ipv4_nf_local_out(void *priv, struct sk_buff *skb,
+ {
+ 	struct foe_entry *entry;
+ 	struct iphdr *iph;
+ 
+-	if (!is_magic_tag_valid(skb))
+-		return NF_ACCEPT;
+-
+-	if (unlikely(skb_headroom(skb) < FOE_INFO_LEN))
++	/* Local packets have no RX provenance, even if recycled bytes look valid. */
++	if (!hnat_cpu_has_valid_info(skb))
+ 		return NF_ACCEPT;
+ 
+ 	if (!skb_hnat_is_hashed(skb))
+ 		return NF_ACCEPT;
+ 
++	if (skb_hnat_entry(skb) >= hnat_priv->foe_etry_num ||
++	    skb_hnat_ppe(skb) >= CFG_PPE_NUM)
++		return NF_ACCEPT;
+ 	entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
+ 
+ 	/* Make the flow from local not be bound. */
+ 	iph = ip_hdr(skb);

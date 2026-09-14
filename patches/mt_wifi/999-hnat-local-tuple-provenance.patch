@@ -1,0 +1,23 @@
+Subject: mt_wifi: do not annotate local skbs using recycled RX tuples
+
+The CPU-to-PPE return path has real ingress provenance. Plain local traffic
+does not, and its head/tail may still contain a previous packet's RX tag.
+Reject it before reading the tuple reason, not only in the HNAT hook called
+after metadata writes. No packet data or offload setting is otherwise changed.
+
+--- a/mt_wifi/embedded/plug_in/whnat/woe_client_jedi.c
++++ b/mt_wifi/embedded/plug_in/whnat/woe_client_jedi.c
+@@ -155,6 +155,13 @@ void wifi_tx_tuple_add(void *entry, unsigned char *tx_info)
+ 	if (whnat && ra_sw_nat_hook_tx && whnat->cfg.hw_tx_en) {
+ 		struct sk_buff *skb = (struct sk_buff *)info->pkt;
+ 
++		/* RX tuple fields are meaningful only for received packets.
++		 * Local TCP skbs may carry recycled bytes in head/tail storage.
++		 * offload_no_fdb identifies the artificial CPU-to-PPE return.
++		 */
++		if (!skb->skb_iif && !skb->offload_no_fdb)
++			return;
++
+ 		if ((FOE_AI_HEAD(skb) == HIT_UNBIND_RATE_REACH) || (FOE_AI_TAIL(skb) == HIT_UNBIND_RATE_REACH)) {
+ 			if (IS_SPACE_AVAILABLE_HEAD(skb)) {
+ 				/*WDMA idx*/
