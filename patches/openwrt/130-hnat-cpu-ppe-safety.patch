@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/target/linux/mediatek/files-6.6/drivers/net/ethernet/mediatek/mtk_hnat/hnat_cpu.h
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,112 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef MTK_HNAT_CPU_H
 +#define MTK_HNAT_CPU_H
@@ -77,7 +77,6 @@
 +static unsigned int do_hnat_cpu_to_ge(struct sk_buff *skb)
 +{
 +	struct net_device *dev = READ_ONCE(hnat_priv->g_ppdev);
-+	unsigned int headroom = FOE_INFO_LEN + ETH_HLEN;
 +	bool tagged = skb_vlan_tag_present(skb);
 +
 +	if (skb->mark == HNAT_EXCEPTION_TAG || !dev ||
@@ -85,19 +84,11 @@
 +	    !hnat_cpu_packet_supported(skb))
 +		return NF_ACCEPT;
 +
-+	if (tagged)
-+		headroom += VLAN_HLEN;
-+
-+	/* TCP may retain a payload-only clone in its retransmit queue. We
-+	 * write private metadata at skb->head, so skb_cow_head() is not
-+	 * sufficient: unshare even when the transport header is writable.
-+	 * skb_cow() preserves page fragments and hardware TSO/SG.
++	/* This is a TX reinjection skb, not a PPE RX skb. Do not fabricate
++	 * HNAT RX metadata in skb->head: the TX DMA starts at skb->data and
++	 * PPE return receives a fresh skb populated from the real RX descriptor.
++	 * Avoiding that head write also lets TCP payload-only clones stay shared.
 +	 */
-+	if (skb_cow(skb, headroom))
-+		return NF_DROP;
-+
-+	memset(skb_hnat_info(skb), 0, FOE_INFO_LEN);
-+	skb_hnat_magic_tag(skb) = HNAT_MAGIC_TAG;
 +	skb_push(skb, ETH_HLEN);
 +	skb_reset_mac_header(skb);
 +
